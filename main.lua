@@ -762,8 +762,12 @@ local function AimMouseAt(worldPos)
     return pt
 end
 
--- ==================== [v22.14] FAST CLICK AOE ENGINE ====================
-local function FastClickAura(radius)
+-- ==================== ЧИСТЫЙ СЕТЕВОЙ FAST ATTACK (БЕЗ КЛИКОВ И БЕЗ АНИМАЦИЙ) ====================
+local NetModules = ReplicatedStorage:WaitForChild("Modules", 5) and ReplicatedStorage.Modules:WaitForChild("Net", 5)
+local RegisterAttack = NetModules and NetModules:FindFirstChild("RE/RegisterAttack")
+local RegisterHit = NetModules and NetModules:FindFirstChild("RE/RegisterHit")
+
+local function PerformAttack(targetPos)
     local char = LocalPlayer.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
     local tool = char and char:FindFirstChildOfClass("Tool")
@@ -772,40 +776,36 @@ local function FastClickAura(radius)
     local enemies = workspace:FindFirstChild("Enemies")
     if not enemies then return end
 
-    local targets = {}
-    local primaryTargetPart = nil
+    -- Собираем всех мобов, которых стянуло в одну точку (в радиусе 55 studs)
+    local hitList = {}
+    local primaryPart = nil
 
     for _, mob in ipairs(enemies:GetChildren()) do
         local hum = mob:FindFirstChildOfClass("Humanoid")
         local mHrp = mob:FindFirstChild("HumanoidRootPart")
         if hum and mHrp and hum.Health > 0 then
-            local dist = (mHrp.Position - hrp.Position).Magnitude
-            if dist <= (radius or 55) then
-                if not primaryTargetPart then
-                    primaryTargetPart = mHrp
+            if (mHrp.Position - hrp.Position).Magnitude <= 55 then
+                if not primaryPart then
+                    primaryPart = mHrp
                 end
-                table.insert(targets, {mob, mHrp})
+                -- Формат передачи целей для валидации урона сервером
+                table.insert(hitList, {mob, mHrp})
             end
         end
     end
 
-    if primaryTargetPart and #targets > 0 then
-        pcall(function() tool:Activate() end)
-        if RegisterAttack then pcall(function() RegisterAttack:FireServer(0) end) end
-        if RegisterHit then pcall(function() RegisterHit:FireServer(primaryTargetPart, targets) end) end
+    -- Если мобы в радиусе есть — бьём сразу всех через сетевые пакеты
+    if primaryPart and #hitList > 0 then
+        -- 1. Регистрация атаки в игре (обход анимации)
+        if RegisterAttack then
+            pcall(function() RegisterAttack:FireServer(0) end)
+        end
+        -- 2. Мгновенное нанесение урона всей пачке мобов одновременно
+        if RegisterHit then
+            pcall(function() RegisterHit:FireServer(primaryPart, hitList) end)
+        end
     end
 end
-
-local lastFruitM1 = 0
-local fruitCombo = 0
-local function PerformAttack(targetPos)
-    local char = LocalPlayer.Character
-    local hrp = char and char:FindFirstChild("HumanoidRootPart")
-    local tool = char and char:FindFirstChildOfClass("Tool")
-
-    if targetPos then
-        Camera.CFrame = CFrame.lookAt(Camera.CFrame.Position, targetPos)
-    end
 
     -- 1. Fast Click / Сетевая аура урона по мобам
     FastClickAura(55)
