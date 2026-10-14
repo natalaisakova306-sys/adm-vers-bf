@@ -689,16 +689,22 @@ local function Owned(part)
     return true
 end
 
+-- [Bring Fix] Мобы стягиваются строго в одну точку на земле, не задевая игрока
+-- [Bring Fix] Мобы стягиваются строго в одну точку на земле, не задевая игрока
+local function ClearBring()
+    bringTarget, gatherCF = nil, nil
+end
+
 local function SetBringTarget(target)
     if bringTarget ~= target then
         bringTarget = target
         local h = target and target:FindFirstChild("HumanoidRootPart")
-        gatherCF = h and h.CFrame or nil
+        if h then
+            gatherCF = CFrame.new(h.Position.X, h.Position.Y, h.Position.Z)
+        else
+            gatherCF = nil
+        end
     end
-end
-
-local function ClearBring()
-    bringTarget, gatherCF = nil, nil
 end
 
 local function BringTick()
@@ -728,11 +734,15 @@ local function BringTick()
         if BaseName(mob.Name) == base then
             local hum = mob:FindFirstChildOfClass("Humanoid")
             local mHrp = mob:FindFirstChild("HumanoidRootPart")
-            if hum and mHrp and hum.Health > 0
-                and (mHrp.Position - gatherCF.Position).Magnitude < 250
-                and Owned(mHrp) then
-                mHrp.CanCollide = false
+            if hum and mHrp and hum.Health > 0 and (mHrp.Position - gatherCF.Position).Magnitude < 250 then
+                -- Отключаем коллизию всех деталей моба, чтобы они не отталкивались друг от друга
+                for _, part in ipairs(mob:GetChildren()) do
+                    if part:IsA("BasePart") then
+                        part.CanCollide = false
+                    end
+                end
                 hum.WalkSpeed = 0
+                hum.AutoRotate = false
                 mHrp.AssemblyLinearVelocity = Vector3.zero
                 mHrp.AssemblyAngularVelocity = Vector3.zero
                 mHrp.CFrame = gatherCF
@@ -761,10 +771,13 @@ local vp = Camera.ViewportSize
     pcall(function() VIM:SendMouseMoveEvent(pt.X, pt.Y, game) end)
     return pt
 end
--- ==================== ЧИСТЫЙ СЕТЕВОЙ FAST ATTACK (БЕЗ КЛИКОВ И БЕЗ АНИМАЦИЙ) ====================
+-- ==================== УНИВЕРСАЛЬНЫЙ FAST ATTACK ====================
 local NetModules = ReplicatedStorage:WaitForChild("Modules", 5) and ReplicatedStorage.Modules:WaitForChild("Net", 5)
 local RegisterAttack = NetModules and NetModules:FindFirstChild("RE/RegisterAttack")
 local RegisterHit = NetModules and NetModules:FindFirstChild("RE/RegisterHit")
+
+local fruitCombo = 0
+local lastFruitAtk = 0
 
 local function FastClickAura(radius)
     local char = LocalPlayer.Character
@@ -777,6 +790,7 @@ local function FastClickAura(radius)
 
     local hitList = {}
     local primaryPart = nil
+    local targetPos = nil
 
     for _, mob in ipairs(enemies:GetChildren()) do
         local hum = mob:FindFirstChildOfClass("Humanoid")
@@ -785,19 +799,44 @@ local function FastClickAura(radius)
             if (mHrp.Position - hrp.Position).Magnitude <= (radius or 55) then
                 if not primaryPart then
                     primaryPart = mHrp
+                    targetPos = mHrp.Position
                 end
                 table.insert(hitList, {mob, mHrp})
             end
         end
     end
 
-    if primaryPart and #hitList > 0 then
-        if RegisterAttack then
-            pcall(function() RegisterAttack:FireServer(0) end)
+    if #hitList > 0 then
+        local tip = tool.ToolTip
+
+        -- 1. ДЛЯ МЕЧЕЙ, СТИЛЕЙ БОЯ И CHOP/BUDDHA: Сетевой урон пачкой
+        local attackerPart = tool:FindFirstChild("Handle")
+            or char:FindFirstChild("RightHand")
+            or char:FindFirstChild("Right Arm")
+            or hrp
+
+        if RegisterAttack then pcall(function() RegisterAttack:FireServer(0) end) end
+        if RegisterHit then pcall(function() RegisterHit:FireServer(attackerPart, hitList) end) end
+
+        -- 2. ДЛЯ ФРУКТОВ (Ice, Light, Magma и т.д.): Пакет атаки фрукта
+        if tip == "Blox Fruit" and targetPos then
+            if os.clock() - lastFruitAtk >= (State.AtkInterval or 0.10) then
+                lastFruitAtk = os.clock()
+                local d = targetPos - hrp.Position
+                local maxC = (State.ComboMode == "1-4") and 4 or ((State.ComboMode == "1") and 1 or 3)
+                fruitCombo = fruitCombo % maxC + 1
+
+                for _, rName in ipairs({"RemoteEvent", "LeftClickRemote", "Input"}) do
+                    local r = tool:FindFirstChild(rName)
+                    if r and r:IsA("RemoteEvent") then
+                        pcall(function() r:FireServer(d.Unit, fruitCombo) end)
+                    end
+                end
+            end
         end
-        if RegisterHit then
-            pcall(function() RegisterHit:FireServer(primaryPart, hitList) end)
-        end
+
+        -- 3. Нативная активация тула в руках (без физических кликов по экрану)
+        pcall(function() tool:Activate() end)
     end
 end
 
@@ -1446,8 +1485,9 @@ local function FarmStep(run)
         lastMobSeen[q.Mob] = mobPos
         Diag.camTarget = mobPos
 
-        local hoverPos = State.Front and FrontPosition(target, tHrp, hrp.Position)
-            or (mobPos + Vector3.new(0, hoverNow, 0))
+-- Персонаж висит строго НАД пачкой мобов на безопасной высоте
+        local stackPos = gatherCF and gatherCF.Position or mobPos
+        local hoverPos = stackPos + Vector3.new(0, hoverNow, 0)
 
         local approach = (hrp.Position - hoverPos).Magnitude
         if approach > 25 then
@@ -1474,10 +1514,11 @@ local function FarmStep(run)
             end
 
             SetStatus(string.format("Fast Click: %s [%s]", q.Mob, tostring(lastProgress)))
-            StepToward(hrp, hoverPos, mobPos, 140)
+            -- Направляем персонажа сверху строго в точку стака мобов
+            StepToward(hrp, hoverPos, stackPos + Vector3.new(0.01, 0, 0.01), 140)
             EnsureHold()
             EnsureWeaponEquipped()
-            PerformAttack(mobPos)
+            PerformAttack(stackPos)
         end
     else
         -- ШАГ 3: мобов нет
