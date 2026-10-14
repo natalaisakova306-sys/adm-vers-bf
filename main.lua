@@ -1,7 +1,6 @@
--- [[ XENO BLOX FRUITS HUB v22.15 - MONOLITH COMMERCIAL EDITION (Sea 1) ]] --
--- v22.15: Чистая сборка без дублей и синтаксических ошибок, высота 14.5 studs над стаком,
---         универсальный Fast Attack для всех фруктов с M1 (Лёд, Свет, Чоп и др.), мечей и стилей боя,
---         полный фикс стягивания мобов в одну точку на земле, клики не задевают GUI.
+-- [[ XENO BLOX FRUITS HUB v22.16 - DEFINITIVE HYBRID FAST ATTACK (Sea 1) ]] --
+-- v22.16: Корректное подключение Net:RemoteEvent (урон 100% проходит), безопасный угол клика (X-60, Y-60),
+--         высота 14.5 studs над стаком мобов, полная заморозка NPC при стягивании.
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -59,10 +58,26 @@ local Remotes = ReplicatedStorage:WaitForChild("Remotes", 5)
 local CommF = Remotes and Remotes:WaitForChild("CommF_", 5)
 if not CommF then Notify("CommF_ не найден: квесты/статы/хаки работать не будут") end
 
--- Сетевые модули урона (Fast Click / AoE Aura)
-local NetModules = ReplicatedStorage:WaitForChild("Modules", 5) and ReplicatedStorage.Modules:WaitForChild("Net", 5)
-local RegisterAttack = NetModules and NetModules:FindFirstChild("RE/RegisterAttack")
-local RegisterHit = NetModules and NetModules:FindFirstChild("RE/RegisterHit")
+-- [v22.16] Безопасное подключение сетевых ремоутов урона
+local RegisterAttack, RegisterHit
+pcall(function()
+    local NetMod = ReplicatedStorage:WaitForChild("Modules", 5):WaitForChild("Net", 5)
+    local Net = require(NetMod)
+    RegisterAttack = Net:RemoteEvent("RegisterAttack")
+    RegisterHit = Net:RemoteEvent("RegisterHit")
+end)
+
+if not RegisterAttack or not RegisterHit then
+    for _, d in ipairs(ReplicatedStorage:GetDescendants()) do
+        if d:IsA("RemoteEvent") then
+            if d.Name == "RegisterAttack" or d.Name == "RE/RegisterAttack" then
+                RegisterAttack = d
+            elseif d.Name == "RegisterHit" or d.Name == "RE/RegisterHit" then
+                RegisterHit = d
+            end
+        end
+    end
+end
 
 local function Invoke(...)
     if not CommF then return nil end
@@ -718,6 +733,7 @@ local function BringTick()
                 end
                 hum.WalkSpeed = 0
                 hum.AutoRotate = false
+                hum.PlatformStand = true -- Полная заморозка ударов моба
                 mHrp.AssemblyLinearVelocity = Vector3.zero
                 mHrp.AssemblyAngularVelocity = Vector3.zero
                 mHrp.CFrame = gatherCF
@@ -735,18 +751,7 @@ local function InputAllowed()
     return true
 end
 
-local function AimMouseAt(worldPos)
-    local vp = Camera.ViewportSize
-    local pt = Vector2.new(vp.X * 0.5, vp.Y * 0.5)
-    local v, on = Camera:WorldToViewportPoint(worldPos)
-    if on and v.Z > 0 then
-        pt = Vector2.new(v.X, v.Y)
-    end
-    pcall(function() VIM:SendMouseMoveEvent(pt.X, pt.Y, game) end)
-    return pt
-end
-
--- ==================== УНИВЕРСАЛЬНЫЙ FAST ATTACK (ВСЕ ФРУКТЫ M1 / МЕЧИ / СТИЛИ) ====================
+-- ==================== ГИБРИДНЫЙ FAST ATTACK (ЛЁД / СВЕТ / ЧОП / МЕЧИ / СТИЛИ) ====================
 local fruitCombo = 0
 local lastFruitAtk = 0
 
@@ -770,26 +775,25 @@ local function FastClickAura(radius, targetPos)
                 if not primaryPart then
                     primaryPart = mHrp
                 end
-                table.insert(hitList, {mHrp, mHrp})
+                table.insert(hitList, {mob, mHrp})
             end
         end
     end
 
     if primaryPart and #hitList > 0 then
-        local tip = tool.ToolTip
-
-        -- 1. Нативная активация тула в руке
+        -- 1. Нативная активация инструмента в руках
         pcall(function() tool:Activate() end)
 
-        -- 2. Клиентский клик в верхний левый угол (1, 1) — активирует M1 любого фрукта (Лёд, Свет, Китсуне и т.д.)
+        -- 2. Клиентский клик в угол экрана (X - 60, Y - 60) — не касается меню хаба и активирует M1 любого фрукта/оружия
+        local vp = Camera.ViewportSize
         pcall(function()
             VirtualUser:CaptureController()
-            VirtualUser:Button1Down(Vector2.new(1, 1))
-            VirtualUser:Button1Up(Vector2.new(1, 1))
+            VirtualUser:Button1Down(Vector2.new(vp.X - 60, vp.Y - 60))
+            VirtualUser:Button1Up(Vector2.new(vp.X - 60, vp.Y - 60))
         end)
 
-        -- 3. Если фрукт использует собственные ремоуты для атаки
-        if tip == "Blox Fruit" and targetPos then
+        -- 3. Вызов ремоутов фруктов (если задействованы сетевые способности)
+        if tool.ToolTip == "Blox Fruit" and targetPos then
             if os.clock() - lastFruitAtk >= (State.AtkInterval or 0.10) then
                 lastFruitAtk = os.clock()
                 local d = targetPos - hrp.Position
@@ -805,7 +809,7 @@ local function FastClickAura(radius, targetPos)
             end
         end
 
-        -- 4. Сетевой пакет урона по пачке (для всех мечей, стилей боя, Чопа, Будды и M1)
+        -- 4. Сетевой пакет нанесения урона сразу всей пачке мобов
         local attackerPart = tool:FindFirstChild("Handle")
             or char:FindFirstChild("RightHand")
             or char:FindFirstChild("Right Arm")
@@ -924,13 +928,13 @@ TopHeader.BackgroundTransparency = 1
 
 local HeaderTitle = Label(TopHeader, "Main Farm", UDim2.new(0, 14, 0, 8), UDim2.new(0, 180, 0, 20),
     Enum.Font.GothamBold, Color3.fromRGB(245, 246, 250), 16)
-local StatusLabel = Label(TopHeader, "v22.15 | idle", UDim2.new(0, 14, 0, 28), UDim2.new(0, 280, 0, 14),
+local StatusLabel = Label(TopHeader, "v22.16 | idle", UDim2.new(0, 14, 0, 28), UDim2.new(0, 280, 0, 14),
     Enum.Font.Gotham, COL.sub, 11)
 local lastStatus = ""
 local function SetStatus(s)
     if s ~= lastStatus then
         lastStatus = s
-        StatusLabel.Text = "v22.15 | " .. s
+        StatusLabel.Text = "v22.16 | " .. s
         local st = Diag.status
         st[#st + 1] = string.format("[%s] %s", os.date("%H:%M:%S"), s)
         if #st > 60 then table.remove(st, 1) end
@@ -1211,21 +1215,8 @@ Connect(LocalPlayer.CharacterAdded, function()
     end
 end)
 
-local hoverHeight = 14.5
 local retreatCooldown = 0
 local hpTrack = {mob = nil, hp = 0, t = 0}
-
-local function HookHealth(char)
-    local hum = char:WaitForChild("Humanoid", 10)
-    if not hum then return end
-    hum.HealthChanged:Connect(function(hp)
-        -- Слушатель здоровья
-    end)
-end
-if LocalPlayer.Character then task.spawn(HookHealth, LocalPlayer.Character) end
-Connect(LocalPlayer.CharacterAdded, function(c)
-    task.spawn(HookHealth, c)
-end)
 
 local remoteQuestOK, remoteFails = nil, 0
 local function TryStartQuest(qd)
@@ -1345,7 +1336,7 @@ local function FarmStep(run)
         q = activeQ
     end
 
-    -- ШАГ 1: квест
+    -- ШАГ 1: Взятие квеста
     if not IsQuestActive(q) then
         local key = QuestKey(q)
         if lastQuestKey ~= key then
@@ -1425,7 +1416,7 @@ local function FarmStep(run)
         return
     end
 
-    -- ШАГ 2: ближайший живой моб
+    -- ШАГ 2: Ближайший живой моб
     local target = GetLiveMob(q.Mob, hrp.Position)
     local tHrp = target and target:FindFirstChild("HumanoidRootPart")
     if tHrp then
@@ -1436,7 +1427,7 @@ local function FarmStep(run)
 
         -- Безопасная высота 14.5 studs над центром пачки на земле
         local stackPos = gatherCF and gatherCF.Position or mobPos
-        local hoverPos = stackPos + Vector3.new(0, hoverHeight, 0)
+        local hoverPos = stackPos + Vector3.new(0, State.Hover, 0)
 
         local approach = (hrp.Position - hoverPos).Magnitude
         if approach > 25 then
@@ -1460,7 +1451,7 @@ local function FarmStep(run)
             end
 
             SetStatus(string.format("Fast Click: %s [%s]", q.Mob, tostring(lastProgress)))
-            -- Направляем персонажа сверху строго в точку стака мобов
+            -- Зависаем сверху и направляем оружие вниз
             StepToward(hrp, hoverPos, stackPos + Vector3.new(0.01, -1, 0.01), 140)
             EnsureHold()
             EnsureWeaponEquipped()
@@ -1471,7 +1462,7 @@ local function FarmStep(run)
         ClearBring()
         local sp, src = GetDynamicSpawn(q.Mob, q.MobPos, hrp.Position)
         SetStatus("ищу " .. q.Mob .. " (" .. src .. ")")
-        SafeFlyTo(sp + Vector3.new(0, hoverHeight, 0), src == "table" and ResolveGround or nil)
+        SafeFlyTo(sp + Vector3.new(0, State.Hover, 0), src == "table" and ResolveGround or nil)
         task.wait(0.4)
     end
 end
@@ -2098,7 +2089,7 @@ local function SetupMapExport()
         local function Cap(name, v) return name .. "=" .. tostring(v ~= nil) end
         local function Clean(t) return (string.gsub(tostring(t), "[\r\n]+", " ")) end
 
-        add("# XenoHub REPORT v22.15 | " .. os.date("%Y-%m-%d %H:%M:%S"))
+        add("# XenoHub REPORT v22.16 | " .. os.date("%Y-%m-%d %H:%M:%S"))
         local team = "?"
         pcall(function() team = LocalPlayer.Team and LocalPlayer.Team.Name or "none" end)
         add("PlaceId=" .. game.PlaceId .. " | Level=" .. tostring(ReadData("Level")) .. " | Beli=" .. tostring(ReadData("Beli"))
@@ -2225,48 +2216,4 @@ local function SetupMapExport()
     AddToggle(AdminPage, "Сбор данных карты", "Запоминает NPC и спавны мобов", true, function(val) collectOn = val end)
     AddAction(AdminPage, "Экспорт NPC и спавнов", "Записать данные в консоль и буфер", DoExport)
     AddSection(AdminPage, "Авто-облёт карты")
-    AddAction(AdminPage, "Старт: облёт всех островов", "Летает по карте и собирает данные", RunMapScan)
-    AddAction(AdminPage, "Стоп облёта", "Остановить облёт", StopMapScan)
-end
-SetupMapExport()
-
--- ==================== SETTINGS ====================
-AddSection(SettingsPage, "Client & Utility")
-AddAction(SettingsPage, "Rejoin Server", "Перезайти на этот же сервер", function()
-    pcall(function() TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, LocalPlayer) end)
-end)
-
-AddAction(SettingsPage, "Close GUI", "Полностью выгрузить скрипт", function()
-    alive = false
-    State.Farm, State.Chests, State.Stats = false, false, false
-    CfgSet("t:Auto Farm Level", false)
-    CfgSet("t:Auto Chest Farm", false)
-    CfgSet("t:Auto Stats", false)
-    farmRun = farmRun + 1
-    infJump, fastSpeed, fruitESPActive = false, false, false
-    if fullBright then fullBright = false; RestoreLighting() end
-    ClearESP()
-    CancelFlight()
-    RemoveHold()
-    pcall(function() RunService:UnbindFromRenderStep("XenoFarmCam") end)
-    if Diag.camOwned then Diag.camOwned = false Camera.CameraType = Enum.CameraType.Custom end
-    for _, c in ipairs(Connections) do pcall(function() c:Disconnect() end) end
-    Connections = {}
-    ScreenGui:Destroy()
-end)
-
-AddAction(SettingsPage, "Reset Settings", "Сбросить настройки", function()
-    Config = {}
-    SaveConfig()
-    Notify("Настройки сброшены")
-end)
-
-task.delay(2, function()
-    if not alive then return end
-    for _, fn in ipairs(PendingToggles) do
-        task.spawn(function() pcall(fn) end)
-    end
-    PendingToggles = {}
-end)
-
-Notify("Xeno Hub v22.15 загружен! Fast Click активен.")
+    AddAction(AdminPage, "Старт: облёт всех островов", "Летает
