@@ -1,6 +1,8 @@
--- [[ XENO BLOX FRUITS HUB v22.16 - DEFINITIVE HYBRID FAST ATTACK (Sea 1) ]] --
--- v22.16: Корректное подключение Net:RemoteEvent (урон 100% проходит), безопасный угол клика (X-60, Y-60),
---         высота 14.5 studs над стаком мобов, полная заморозка NPC при стягивании.
+-- [[ XENO BLOX FRUITS HUB v22.17 - STABLE MONOLITH EDITION (Sea 1) ]] --
+-- v22.17: Устранены синхронные зависания при запуске (мгновенный старт GUI),
+--         исправлена структура RegisterHit для гарантированного урона,
+--         авто-сворачивание хаба при фарме (M1 фруктов бьет без помех),
+--         безопасное удержание на высоте 14.5 studs над стаком мобов.
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -42,7 +44,7 @@ local function GetGuiParent()
         f:Destroy()
     end)
     if ok then return game:GetService("CoreGui") end
-    return LocalPlayer:WaitForChild("PlayerGui")
+    return LocalPlayer:WaitForChild("PlayerGui", 5) or LocalPlayer.PlayerGui
 end
 
 local TargetParent = GetGuiParent()
@@ -58,26 +60,18 @@ local Remotes = ReplicatedStorage:WaitForChild("Remotes", 5)
 local CommF = Remotes and Remotes:WaitForChild("CommF_", 5)
 if not CommF then Notify("CommF_ не найден: квесты/статы/хаки работать не будут") end
 
--- [v22.16] Безопасное подключение сетевых ремоутов урона
+-- Безопасный асинхронный поиск ремоутов урона (не блокирует старт скрипта)
 local RegisterAttack, RegisterHit
-pcall(function()
-    local NetMod = ReplicatedStorage:WaitForChild("Modules", 5):WaitForChild("Net", 5)
-    local Net = require(NetMod)
-    RegisterAttack = Net:RemoteEvent("RegisterAttack")
-    RegisterHit = Net:RemoteEvent("RegisterHit")
-end)
-
-if not RegisterAttack or not RegisterHit then
-    for _, d in ipairs(ReplicatedStorage:GetDescendants()) do
-        if d:IsA("RemoteEvent") then
-            if d.Name == "RegisterAttack" or d.Name == "RE/RegisterAttack" then
-                RegisterAttack = d
-            elseif d.Name == "RegisterHit" or d.Name == "RE/RegisterHit" then
-                RegisterHit = d
-            end
+task.spawn(function()
+    pcall(function()
+        local net = ReplicatedStorage:WaitForChild("Modules", 3)
+        net = net and net:WaitForChild("Net", 3)
+        if net then
+            RegisterAttack = net:FindFirstChild("RE/RegisterAttack") or net:FindFirstChild("RegisterAttack")
+            RegisterHit = net:FindFirstChild("RE/RegisterHit") or net:FindFirstChild("RegisterHit")
         end
-    end
-end
+    end)
+end)
 
 local function Invoke(...)
     if not CommF then return nil end
@@ -733,7 +727,7 @@ local function BringTick()
                 end
                 hum.WalkSpeed = 0
                 hum.AutoRotate = false
-                hum.PlatformStand = true -- Полная заморозка ударов моба
+                hum.PlatformStand = true
                 mHrp.AssemblyLinearVelocity = Vector3.zero
                 mHrp.AssemblyAngularVelocity = Vector3.zero
                 mHrp.CFrame = gatherCF
@@ -749,6 +743,17 @@ end)
 local function InputAllowed()
     if UserInputService:GetFocusedTextBox() then return false end
     return true
+end
+
+local function AimMouseAt(worldPos)
+    local vp = Camera.ViewportSize
+    local pt = Vector2.new(vp.X * 0.5, vp.Y * 0.5)
+    local v, on = Camera:WorldToViewportPoint(worldPos)
+    if on and v.Z > 0 then
+        pt = Vector2.new(v.X, v.Y)
+    end
+    pcall(function() VIM:SendMouseMoveEvent(pt.X, pt.Y, game) end)
+    return pt
 end
 
 -- ==================== ГИБРИДНЫЙ FAST ATTACK (ЛЁД / СВЕТ / ЧОП / МЕЧИ / СТИЛИ) ====================
@@ -772,27 +777,28 @@ local function FastClickAura(radius, targetPos)
         local mHrp = mob:FindFirstChild("HumanoidRootPart")
         if hum and mHrp and hum.Health > 0 then
             if (mHrp.Position - hrp.Position).Magnitude <= (radius or 55) then
+                local head = mob:FindFirstChild("Head") or mHrp
                 if not primaryPart then
-                    primaryPart = mHrp
+                    primaryPart = head
                 end
-                table.insert(hitList, {mob, mHrp})
+                table.insert(hitList, {head, mob})
             end
         end
     end
 
     if primaryPart and #hitList > 0 then
-        -- 1. Нативная активация инструмента в руках
+        -- 1. Активация инструмента в руке
         pcall(function() tool:Activate() end)
 
-        -- 2. Клиентский клик в угол экрана (X - 60, Y - 60) — не касается меню хаба и активирует M1 любого фрукта/оружия
+        -- 2. Клиентский клик в центр видового экрана (запускает M1 любого оружия)
         local vp = Camera.ViewportSize
         pcall(function()
             VirtualUser:CaptureController()
-            VirtualUser:Button1Down(Vector2.new(vp.X - 60, vp.Y - 60))
-            VirtualUser:Button1Up(Vector2.new(vp.X - 60, vp.Y - 60))
+            VirtualUser:Button1Down(Vector2.new(vp.X * 0.5, vp.Y * 0.5))
+            VirtualUser:Button1Up(Vector2.new(vp.X * 0.5, vp.Y * 0.5))
         end)
 
-        -- 3. Вызов ремоутов фруктов (если задействованы сетевые способности)
+        -- 3. Вызов внутренних ремоутов фруктов
         if tool.ToolTip == "Blox Fruit" and targetPos then
             if os.clock() - lastFruitAtk >= (State.AtkInterval or 0.10) then
                 lastFruitAtk = os.clock()
@@ -809,13 +815,13 @@ local function FastClickAura(radius, targetPos)
             end
         end
 
-        -- 4. Сетевой пакет нанесения урона сразу всей пачке мобов
+        -- 4. Сетевой пакет нанесения урона
         local attackerPart = tool:FindFirstChild("Handle")
             or char:FindFirstChild("RightHand")
             or char:FindFirstChild("Right Arm")
             or hrp
 
-        if RegisterAttack then pcall(function() RegisterAttack:FireServer(0) end) end
+        if RegisterAttack then pcall(function() RegisterAttack:FireServer() end) end
         if RegisterHit then pcall(function() RegisterHit:FireServer(attackerPart, hitList) end) end
     end
 end
@@ -928,13 +934,13 @@ TopHeader.BackgroundTransparency = 1
 
 local HeaderTitle = Label(TopHeader, "Main Farm", UDim2.new(0, 14, 0, 8), UDim2.new(0, 180, 0, 20),
     Enum.Font.GothamBold, Color3.fromRGB(245, 246, 250), 16)
-local StatusLabel = Label(TopHeader, "v22.16 | idle", UDim2.new(0, 14, 0, 28), UDim2.new(0, 280, 0, 14),
+local StatusLabel = Label(TopHeader, "v22.17 | idle", UDim2.new(0, 14, 0, 28), UDim2.new(0, 280, 0, 14),
     Enum.Font.Gotham, COL.sub, 11)
 local lastStatus = ""
 local function SetStatus(s)
     if s ~= lastStatus then
         lastStatus = s
-        StatusLabel.Text = "v22.16 | " .. s
+        StatusLabel.Text = "v22.17 | " .. s
         local st = Diag.status
         st[#st + 1] = string.format("[%s] %s", os.date("%H:%M:%S"), s)
         if #st > 60 then table.remove(st, 1) end
@@ -1451,7 +1457,6 @@ local function FarmStep(run)
             end
 
             SetStatus(string.format("Fast Click: %s [%s]", q.Mob, tostring(lastProgress)))
-            -- Зависаем сверху и направляем оружие вниз
             StepToward(hrp, hoverPos, stackPos + Vector3.new(0.01, -1, 0.01), 140)
             EnsureHold()
             EnsureWeaponEquipped()
@@ -1537,6 +1542,9 @@ FarmToggle = AddToggle(FarmPage, "Auto Farm Level", "Авто-квест + Fast 
     State.Farm = val
     if val then
         if State.Chests and ChestToggle then ChestToggle:Set(false, true) end
+        -- Сворачиваем интерфейс в кнопку ⚡ для очистки экрана под M1-атаку
+        Main.Visible = false
+        OpenBtn.Visible = true
         StartFarm()
     else
         farmRun = farmRun + 1
@@ -2087,9 +2095,8 @@ local function SetupMapExport()
         local L = {}
         local function add(t) L[#L + 1] = t end
         local function Cap(name, v) return name .. "=" .. tostring(v ~= nil) end
-        local function Clean(t) return (string.gsub(tostring(t), "[\r\n]+", " ")) end
 
-        add("# XenoHub REPORT v22.16 | " .. os.date("%Y-%m-%d %H:%M:%S"))
+        add("# XenoHub REPORT v22.17 | " .. os.date("%Y-%m-%d %H:%M:%S"))
         local team = "?"
         pcall(function() team = LocalPlayer.Team and LocalPlayer.Team.Name or "none" end)
         add("PlaceId=" .. game.PlaceId .. " | Level=" .. tostring(ReadData("Level")) .. " | Beli=" .. tostring(ReadData("Beli"))
@@ -2216,4 +2223,48 @@ local function SetupMapExport()
     AddToggle(AdminPage, "Сбор данных карты", "Запоминает NPC и спавны мобов", true, function(val) collectOn = val end)
     AddAction(AdminPage, "Экспорт NPC и спавнов", "Записать данные в консоль и буфер", DoExport)
     AddSection(AdminPage, "Авто-облёт карты")
-    AddAction(AdminPage, "Старт: облёт всех островов", "Летает
+    AddAction(AdminPage, "Старт: облёт всех островов", "Летает по карте и собирает данные", RunMapScan)
+    AddAction(AdminPage, "Стоп облёта", "Остановить облёт", StopMapScan)
+end
+SetupMapExport()
+
+-- ==================== SETTINGS ====================
+AddSection(SettingsPage, "Client & Utility")
+AddAction(SettingsPage, "Rejoin Server", "Перезайти на этот же сервер", function()
+    pcall(function() TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, LocalPlayer) end)
+end)
+
+AddAction(SettingsPage, "Close GUI", "Полностью выгрузить скрипт", function()
+    alive = false
+    State.Farm, State.Chests, State.Stats = false, false, false
+    CfgSet("t:Auto Farm Level", false)
+    CfgSet("t:Auto Chest Farm", false)
+    CfgSet("t:Auto Stats", false)
+    farmRun = farmRun + 1
+    infJump, fastSpeed, fruitESPActive = false, false, false
+    if fullBright then fullBright = false; RestoreLighting() end
+    ClearESP()
+    CancelFlight()
+    RemoveHold()
+    pcall(function() RunService:UnbindFromRenderStep("XenoFarmCam") end)
+    if Diag.camOwned then Diag.camOwned = false Camera.CameraType = Enum.CameraType.Custom end
+    for _, c in ipairs(Connections) do pcall(function() c:Disconnect() end) end
+    Connections = {}
+    ScreenGui:Destroy()
+end)
+
+AddAction(SettingsPage, "Reset Settings", "Сбросить настройки", function()
+    Config = {}
+    SaveConfig()
+    Notify("Настройки сброшены")
+end)
+
+task.delay(2, function()
+    if not alive then return end
+    for _, fn in ipairs(PendingToggles) do
+        task.spawn(function() pcall(fn) end)
+    end
+    PendingToggles = {}
+end)
+
+Notify("Xeno Hub v22.17 загружен! Запуск мгновенный.")
