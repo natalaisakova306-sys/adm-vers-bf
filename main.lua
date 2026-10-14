@@ -752,7 +752,7 @@ local function InputAllowed()
 end
 
 local function AimMouseAt(worldPos)
-    local vp = Camera.ViewportSize
+local vp = Camera.ViewportSize
     local pt = Vector2.new(vp.X * 0.5, vp.Y * 0.5)
     local v, on = Camera:WorldToViewportPoint(worldPos)
     if on and v.Z > 0 then
@@ -761,13 +761,12 @@ local function AimMouseAt(worldPos)
     pcall(function() VIM:SendMouseMoveEvent(pt.X, pt.Y, game) end)
     return pt
 end
-
 -- ==================== ЧИСТЫЙ СЕТЕВОЙ FAST ATTACK (БЕЗ КЛИКОВ И БЕЗ АНИМАЦИЙ) ====================
 local NetModules = ReplicatedStorage:WaitForChild("Modules", 5) and ReplicatedStorage.Modules:WaitForChild("Net", 5)
 local RegisterAttack = NetModules and NetModules:FindFirstChild("RE/RegisterAttack")
 local RegisterHit = NetModules and NetModules:FindFirstChild("RE/RegisterHit")
 
-local function PerformAttack(targetPos)
+local function FastClickAura(radius)
     local char = LocalPlayer.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
     local tool = char and char:FindFirstChildOfClass("Tool")
@@ -776,7 +775,6 @@ local function PerformAttack(targetPos)
     local enemies = workspace:FindFirstChild("Enemies")
     if not enemies then return end
 
-    -- Собираем всех мобов, которых стянуло в одну точку (в радиусе 55 studs)
     local hitList = {}
     local primaryPart = nil
 
@@ -784,65 +782,30 @@ local function PerformAttack(targetPos)
         local hum = mob:FindFirstChildOfClass("Humanoid")
         local mHrp = mob:FindFirstChild("HumanoidRootPart")
         if hum and mHrp and hum.Health > 0 then
-            if (mHrp.Position - hrp.Position).Magnitude <= 55 then
+            if (mHrp.Position - hrp.Position).Magnitude <= (radius or 55) then
                 if not primaryPart then
                     primaryPart = mHrp
                 end
-                -- Формат передачи целей для валидации урона сервером
                 table.insert(hitList, {mob, mHrp})
             end
         end
     end
 
-    -- Если мобы в радиусе есть — бьём сразу всех через сетевые пакеты
     if primaryPart and #hitList > 0 then
-        -- 1. Регистрация атаки в игре (обход анимации)
         if RegisterAttack then
             pcall(function() RegisterAttack:FireServer(0) end)
         end
-        -- 2. Мгновенное нанесение урона всей пачке мобов одновременно
         if RegisterHit then
             pcall(function() RegisterHit:FireServer(primaryPart, hitList) end)
         end
     end
 end
 
-    -- 1. Fast Click / Сетевая аура урона по мобам
+local function PerformAttack(targetPos)
+    if targetPos then
+        Camera.CFrame = CFrame.lookAt(Camera.CFrame.Position, targetPos)
+    end
     FastClickAura(55)
-
-    -- 2. Если это фрукт со своим ремоутом (Ice, Light, etc.)
-    local tip = tool and tool.ToolTip or "none"
-    if tip == "Blox Fruit" and tool and targetPos and hrp then
-        if os.clock() - lastFruitM1 >= (State.AtkInterval or 0.10) then
-            lastFruitM1 = os.clock()
-            local d = targetPos - hrp.Position
-            if d.Magnitude >= 0.1 then
-                local maxC = (State.ComboMode == "1-4") and 4 or ((State.ComboMode == "1") and 1 or 3)
-                fruitCombo = fruitCombo % maxC + 1
-                for _, rName in ipairs({"RemoteEvent", "LeftClickRemote", "Input"}) do
-                    local r = tool:FindFirstChild(rName)
-                    if r and r:IsA("RemoteEvent") then
-                        pcall(function() r:FireServer(d.Unit, fruitCombo) end)
-                    end
-                end
-            end
-        end
-    end
-
-    -- 3. Нативная активация
-    if tool then pcall(function() tool:Activate() end) end
-
-    -- 4. Виртуальный клик мыши
-    if targetPos and InputAllowed() then
-        pcall(function()
-            local pt = AimMouseAt(targetPos)
-            VIM:SendMouseButtonEvent(pt.X, pt.Y, 0, true, game, 0)
-            VIM:SendMouseButtonEvent(pt.X, pt.Y, 0, false, game, 0)
-            VirtualUser:CaptureController()
-            VirtualUser:Button1Down(pt)
-            VirtualUser:Button1Up(pt)
-        end)
-    end
 end
 
 -- ==================== ИНТЕРФЕЙС ====================
