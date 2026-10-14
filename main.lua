@@ -1,8 +1,10 @@
--- [[ XENO BLOX FRUITS HUB v22.17 - STABLE MONOLITH EDITION (Sea 1) ]] --
--- v22.17: Устранены синхронные зависания при запуске (мгновенный старт GUI),
---         исправлена структура RegisterHit для гарантированного урона,
---         авто-сворачивание хаба при фарме (M1 фруктов бьет без помех),
---         безопасное удержание на высоте 14.5 studs над стаком мобов.
+-- [[ XENO BLOX FRUITS HUB v23.3 - AUTO RAIDS, ANTI-FAKE MOB & NO-SHAKE EDITION ]] --
+-- v23.3: 1) Анти-Фейк НПС (черный список мобов без урона через 4.5с + фильтр приманок),
+--        2) Убрана тряска экрана (ровное удержание CFrame + отключение CameraShaker),
+--        3) Полностью невидимые хитбоксы (Transparency = 1, Massless = true),
+--        4) Удаление огромных эффектов смерти/ударов (No VFX),
+--        5) Полный сброс левитации (BodyVelocity) при выключении фарма,
+--        6) Новая вкладка Raids: Auto Raid (Island 1-5 + Kill Aura) + Auto Buy/Start Chip.
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -51,16 +53,22 @@ local TargetParent = GetGuiParent()
 local old = TargetParent:FindFirstChild("XenoModernHub")
 if old then old:Destroy() end
 
-local SEA1_PLACE_IDS = {[2753915549] = true, [85211729168715] = true}
-if not SEA1_PLACE_IDS[game.PlaceId] then
-    Notify("Скрипт рассчитан на Sea 1! Квесты/координаты не подойдут.")
-end
-
 local Remotes = ReplicatedStorage:WaitForChild("Remotes", 5)
 local CommF = Remotes and Remotes:WaitForChild("CommF_", 5)
-if not CommF then Notify("CommF_ не найден: квесты/статы/хаки работать не будут") end
 
--- Безопасный асинхронный поиск ремоутов урона (не блокирует старт скрипта)
+-- Отключаем встроенную тряску камеры Blox Fruits
+task.spawn(function()
+    pcall(function()
+        local util = ReplicatedStorage:WaitForChild("Util", 5)
+        local shaker = util and util:FindFirstChild("CameraShaker")
+        if shaker then
+            local cs = require(shaker)
+            if cs and cs.Stop then cs:Stop() end
+        end
+    end)
+end)
+
+-- Поиск сетевых ремоутов урона в фоне
 local RegisterAttack, RegisterHit
 task.spawn(function()
     pcall(function()
@@ -71,6 +79,14 @@ task.spawn(function()
             RegisterHit = net:FindFirstChild("RE/RegisterHit") or net:FindFirstChild("RegisterHit")
         end
     end)
+    if not RegisterAttack or not RegisterHit then
+        for _, d in ipairs(ReplicatedStorage:GetDescendants()) do
+            if d:IsA("RemoteEvent") then
+                if d.Name:find("RegisterAttack") then RegisterAttack = d end
+                if d.Name:find("RegisterHit") then RegisterHit = d end
+            end
+        end
+    end
 end)
 
 local function Invoke(...)
@@ -114,20 +130,28 @@ local PendingToggles = {}
 -- ==================== СОСТОЯНИЕ ====================
 local State = {
     Farm = false,
+    AutoRaid = false,
+    AutoChip = false,
     Chests = false,
     Stats = false,
     Bring = true,
+    Hitbox = true,
+    HitboxSize = 55,
+    NoVFX = true,
     Buso = true,
     AntiPvP = false,
     Skills = false,
-    AtkInterval = 0.10,
+    AtkInterval = 0.08,
     ComboMode = "1-3",
-    CamLock = true,
+    CamLock = false,
+    SeaMode = Cfg("SeaMode", "Auto"),
+    RaidChip = Cfg("RaidChip", "Ice"),
     Weapon = Cfg("Weapon", "Any"),
     StatMode = Cfg("StatMode", "Fruit"),
-    Hover = 14.5,
+    Hover = 11.5,
 }
 local farmRun = 0
+local raidRun = 0
 
 local Diag = {
     status = {}, errors = {}, hiddenSince = nil,
@@ -143,8 +167,49 @@ Connect(LocalPlayer.Idled, function()
     end)
 end)
 
--- ==================== БАЗА КВЕСТОВ SEA 1 ====================
-local QuestsData = {
+-- ==================== УДАЛЕНИЕ ЭФФЕКТОВ СМЕРТИ И ВЗРЫВОВ (NO VFX) ====================
+local function CleanEffectInstance(obj)
+    if not State.NoVFX then return end
+    pcall(function()
+        if obj:IsA("ParticleEmitter") or obj:IsA("Trail") or obj:IsA("Beam") or obj:IsA("Smoke") or obj:IsA("Fire") or obj:IsA("Sparkles") then
+            obj.Enabled = false
+        elseif obj:IsA("Explosion") then
+            obj.BlastPressure = 0
+            obj.Visible = false
+        end
+    end)
+end
+
+task.spawn(function()
+    while alive do
+        task.wait(0.35)
+        if State.NoVFX then
+            pcall(function()
+                local eff = workspace:FindFirstChild("Effects")
+                if eff then
+                    eff:ClearAllChildren()
+                end
+                local origin = workspace:FindFirstChild("_WorldOrigin")
+                if origin then
+                    for _, ch in ipairs(origin:GetChildren()) do
+                        if ch.Name == "Foam" or ch.Name == "DamageCounter" or ch.Name:find("Effect") or ch.Name:find("Hit") then
+                            ch:Destroy()
+                        end
+                    end
+                end
+            end)
+        end
+    end
+end)
+
+Connect(workspace.DescendantAdded, function(obj)
+    if State.NoVFX then
+        CleanEffectInstance(obj)
+    end
+end)
+
+-- ==================== БАЗЫ КВЕСТОВ SEA 1 И SEA 2 ====================
+local Sea1Quests = {
     {Level = 1, Quest = "BanditQuest1", Id = 1, Mob = "Bandit", NpcName = "Bandit Quest Giver", NpcPos = Vector3.new(1052, 15, 1558), MobPos = Vector3.new(991, 14, 1571)},
     {Level = 10, Quest = "JungleQuest", Id = 1, Mob = "Monkey", NpcName = "Adventurer", NpcPos = Vector3.new(-1680, 49, 176), MobPos = Vector3.new(-1526, 27, 164)},
     {Level = 15, Quest = "JungleQuest", Id = 2, Mob = "Gorilla", NpcName = "Adventurer", NpcPos = Vector3.new(-1680, 49, 176), MobPos = Vector3.new(-1352, 18, -501)},
@@ -173,21 +238,69 @@ local QuestsData = {
     {Level = 650, Quest = "FountainQuest", Id = 2, Mob = "Galley Captain", NpcName = "Freezeburg Quest Giver", NpcPos = Vector3.new(5263, 75, 4088), MobPos = Vector3.new(5685, 78, 4733)},
 }
 
+local Sea2Quests = {
+    {Level = 700, Quest = "Area1Quest", Id = 1, Mob = "Raider", NpcName = "Quest Giver", NpcPos = Vector3.new(-426, 73, 1836), MobPos = Vector3.new(-736, 39, 2388)},
+    {Level = 725, Quest = "Area1Quest", Id = 2, Mob = "Mercenary", NpcName = "Quest Giver", NpcPos = Vector3.new(-426, 73, 1836), MobPos = Vector3.new(-874, 141, 1313)},
+    {Level = 775, Quest = "Area2Quest", Id = 1, Mob = "Swan Pirate", NpcName = "Quest Giver", NpcPos = Vector3.new(634, 73, 918), MobPos = Vector3.new(878, 122, 1229)},
+    {Level = 800, Quest = "Area2Quest", Id = 2, Mob = "Factory Staff", NpcName = "Quest Giver", NpcPos = Vector3.new(634, 73, 918), MobPos = Vector3.new(295, 73, -56)},
+    {Level = 875, Quest = "MarineQuest3", Id = 1, Mob = "Marine Lieutenant", NpcName = "Quest Giver", NpcPos = Vector3.new(-2443, 73, -3217), MobPos = Vector3.new(-2806, 73, -3038)},
+    {Level = 900, Quest = "MarineQuest3", Id = 2, Mob = "Marine Captain", NpcName = "Quest Giver", NpcPos = Vector3.new(-2443, 73, -3217), MobPos = Vector3.new(-1867, 73, -3320)},
+    {Level = 950, Quest = "ZombieQuest", Id = 1, Mob = "Zombie", NpcName = "Quest Giver", NpcPos = Vector3.new(-5495, 48, -794), MobPos = Vector3.new(-5657, 60, -735)},
+    {Level = 975, Quest = "ZombieQuest", Id = 2, Mob = "Vampire", NpcName = "Quest Giver", NpcPos = Vector3.new(-5495, 48, -794), MobPos = Vector3.new(-6033, 7, -1317)},
+    {Level = 1000, Quest = "SnowMountainQuest", Id = 1, Mob = "Snow Trooper", NpcName = "Quest Giver", NpcPos = Vector3.new(607, 401, -5371), MobPos = Vector3.new(507, 401, -5344)},
+    {Level = 1050, Quest = "SnowMountainQuest", Id = 2, Mob = "Winter Warrior", NpcName = "Quest Giver", NpcPos = Vector3.new(607, 401, -5371), MobPos = Vector3.new(1157, 430, -5188)},
+    {Level = 1100, Quest = "IceSideQuest", Id = 1, Mob = "Lab Subordinate", NpcName = "Quest Giver", NpcPos = Vector3.new(-6060, 15, -4905), MobPos = Vector3.new(-5775, 40, -4467)},
+    {Level = 1125, Quest = "IceSideQuest", Id = 2, Mob = "Horned Warrior", NpcName = "Quest Giver", NpcPos = Vector3.new(-6060, 15, -4905), MobPos = Vector3.new(-6406, 24, -5816)},
+    {Level = 1175, Quest = "FireSideQuest", Id = 1, Mob = "Magma Ninja", NpcName = "Quest Giver", NpcPos = Vector3.new(-5430, 15, -5295), MobPos = Vector3.new(-5428, 64, -5855)},
+    {Level = 1200, Quest = "FireSideQuest", Id = 2, Mob = "Lava Pirate", NpcName = "Quest Giver", NpcPos = Vector3.new(-5430, 15, -5295), MobPos = Vector3.new(-5234, 42, -4720)},
+    {Level = 1250, Quest = "ShipQuest1", Id = 1, Mob = "Ship Deckhand", NpcName = "Quest Giver", NpcPos = Vector3.new(1003, 125, 32969), MobPos = Vector3.new(1194, 125, 32987)},
+    {Level = 1275, Quest = "ShipQuest1", Id = 2, Mob = "Ship Engineer", NpcName = "Quest Giver", NpcPos = Vector3.new(1003, 125, 32969), MobPos = Vector3.new(916, 44, 32782)},
+    {Level = 1300, Quest = "ShipQuest2", Id = 1, Mob = "Ship Steward", NpcName = "Quest Giver", NpcPos = Vector3.new(969, 125, 33245), MobPos = Vector3.new(915, 130, 33419)},
+    {Level = 1325, Quest = "ShipQuest2", Id = 2, Mob = "Ship Officer", NpcName = "Quest Giver", NpcPos = Vector3.new(969, 125, 33245), MobPos = Vector3.new(916, 180, 33340)},
+    {Level = 1350, Quest = "FrostQuest", Id = 1, Mob = "Arctic Warrior", NpcName = "Quest Giver", NpcPos = Vector3.new(5567, 28, -6244), MobPos = Vector3.new(6040, 28, -6231)},
+    {Level = 1375, Quest = "FrostQuest", Id = 2, Mob = "Snow Lurker", NpcName = "Quest Giver", NpcPos = Vector3.new(5567, 28, -6244), MobPos = Vector3.new(5560, 42, -6826)},
+    {Level = 1425, Quest = "ForgottenQuest", Id = 1, Mob = "Sea Soldier", NpcName = "Quest Giver", NpcPos = Vector3.new(-3054, 237, -10142), MobPos = Vector3.new(-3022, 16, -9797)},
+    {Level = 1450, Quest = "ForgottenQuest", Id = 2, Mob = "Water Fighter", NpcName = "Quest Giver", NpcPos = Vector3.new(-3054, 237, -10142), MobPos = Vector3.new(-3385, 239, -10542)},
+}
+
 local MarineStartQuest = {Level = 1, Quest = "MarineQuest", Id = 1, Mob = "Trainee", NpcName = "Marine Leader",
     NpcPos = Vector3.new(-2655, 31, 2114), MobPos = Vector3.new(-2730, 31, 2216)}
+
+local function IsSea2()
+    if State.SeaMode == "Sea 2" then return true end
+    if State.SeaMode == "Sea 1" then return false end
+    if game.PlaceId == 4442272183 then return true end
+    local origin = workspace:FindFirstChild("_WorldOrigin")
+    local spawns = origin and origin:FindFirstChild("EnemySpawns")
+    if spawns then
+        for _, sp in ipairs(spawns:GetChildren()) do
+            local n = sp.Name
+            if n:find("Raider") or n:find("Mercenary") or n:find("Swan Pirate") or n:find("Factory Staff") then
+                return true
+            end
+        end
+    end
+    local lvl = 1
+    pcall(function() lvl = LocalPlayer.Data.Level.Value end)
+    return lvl >= 700
+end
 
 local questFail = {}
 
 local function GetCurrentQuest()
     local lvl = 1
     pcall(function() lvl = LocalPlayer.Data.Level.Value end)
+    local inSea2 = IsSea2()
+    local activeTable = inSea2 and Sea2Quests or Sea1Quests
 
-    local isMarine = false
-    pcall(function() isMarine = LocalPlayer.Team and LocalPlayer.Team.Name == "Marines" end)
-    if isMarine and lvl < 10 then return MarineStartQuest end
+    if not inSea2 then
+        local isMarine = false
+        pcall(function() isMarine = LocalPlayer.Team and LocalPlayer.Team.Name == "Marines" end)
+        if isMarine and lvl < 10 then return MarineStartQuest end
+    end
 
-    local q = QuestsData[1]
-    for _, item in ipairs(QuestsData) do
+    local q = activeTable[1]
+    for _, item in ipairs(activeTable) do
         if lvl >= item.Level then
             if questFail[item.Quest .. ":" .. item.Id] ~= lvl then q = item end
         else
@@ -214,28 +327,58 @@ local function GetLiveMobOwned(part)
     return true
 end
 
+-- ==================== ФИЛЬТР ФЕЙК-НПС (ANTI-DECOY) ====================
 local badMobs = {}
+
+local function IsValidMob(mob)
+    if not mob or not mob.Parent then return false end
+    if badMobs[mob] and badMobs[mob] > os.clock() then return false end
+    local hum = mob:FindFirstChildOfClass("Humanoid")
+    local hrp = mob:FindFirstChild("HumanoidRootPart")
+    if not hum or not hrp then return false end
+    if hum.Health <= 0 or hum.MaxHealth <= 10 then return false end
+    -- Фейковые приманки античита часто заанкорены или висят глубоко под картой
+    if hrp.Anchored or hrp.Position.Y < -100 then return false end
+    if not mob:FindFirstChild("Head") and not mob:FindFirstChild("UpperTorso") and not mob:FindFirstChild("Torso") then
+        return false
+    end
+    return true
+end
+
 local function GetLiveMob(mobName, fromPos)
     local enemies = workspace:FindFirstChild("Enemies")
     if not enemies then return nil end
     local best, bestDist = nil, math.huge
     local bestOwned, bestOwnedDist = nil, math.huge
     for _, mob in ipairs(enemies:GetChildren()) do
-        if IsMobNamed(mob, mobName) and not (badMobs[mob] and badMobs[mob] > os.clock()) then
-            local hum = mob:FindFirstChildOfClass("Humanoid")
-            local hrp = mob:FindFirstChild("HumanoidRootPart")
-            if hum and hrp and hum.Health > 0 then
-                local d = fromPos and (hrp.Position - fromPos).Magnitude or 0
-                if d < bestDist then
-                    best, bestDist = mob, d
-                end
-                if d < bestOwnedDist and GetLiveMobOwned(hrp) then
-                    bestOwned, bestOwnedDist = mob, d
-                end
+        if IsMobNamed(mob, mobName) and IsValidMob(mob) then
+            local hrp = mob.HumanoidRootPart
+            local d = fromPos and (hrp.Position - fromPos).Magnitude or 0
+            if d < bestDist then
+                best, bestDist = mob, d
+            end
+            if d < bestOwnedDist and GetLiveMobOwned(hrp) then
+                bestOwned, bestOwnedDist = mob, d
             end
         end
     end
     return bestOwned or best
+end
+
+local function GetAnyRaidMob(fromPos)
+    local enemies = workspace:FindFirstChild("Enemies")
+    if not enemies then return nil end
+    local best, bestDist = nil, math.huge
+    for _, mob in ipairs(enemies:GetChildren()) do
+        if IsValidMob(mob) then
+            local hrp = mob.HumanoidRootPart
+            local d = fromPos and (hrp.Position - fromPos).Magnitude or 0
+            if d < 1200 and d < bestDist then
+                best, bestDist = mob, d
+            end
+        end
+    end
+    return best
 end
 
 local function Norm(s)
@@ -370,7 +513,7 @@ local function FindNpcByName(name, nearPos)
     if not folder then return nil end
     local best, bd = nil, math.huge
     for _, m in ipairs(folder:GetChildren()) do
-        if m.Name == name then
+        if m.Name == name or m.Name:find(name, 1, true) then
             local p = NpcPart(m)
             if p then
                 local d = nearPos and (p.Position - nearPos).Magnitude or 0
@@ -441,7 +584,7 @@ local function ResolveGround(nominal)
     return nominal + Vector3.new(0, 4, 0)
 end
 
--- ==================== ПОЛЁТ / NOCLIP ====================
+-- ==================== ПОЛЁТ / NOCLIP / СБРОС ЛЕВИТАЦИИ ====================
 local flying = false
 local flightBV = nil
 local currentTween = nil
@@ -449,7 +592,38 @@ local flightId = 0
 local flySpeed = 260
 local rollbackCount = 0
 
+local function RemoveHold()
+    if flightBV then
+        flightBV:Destroy()
+        flightBV = nil
+    end
+    local char = LocalPlayer.Character
+    if char then
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            for _, ch in ipairs(hrp:GetChildren()) do
+                if ch:IsA("BodyMover") or ch.Name == "HoldBV" then
+                    ch:Destroy()
+                end
+            end
+        end
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if hum then
+            hum.PlatformStand = false
+            pcall(function() hum:ChangeState(Enum.HumanoidStateType.Freefall) end)
+        end
+        for _, n in ipairs({"Head", "UpperTorso", "LowerTorso", "Torso"}) do
+            local p = char:FindFirstChild(n)
+            if p and p:IsA("BasePart") then p.CanCollide = true end
+        end
+    end
+end
+
 local function EnsureHold()
+    if not (State.Farm or State.AutoRaid or State.Chests or flying) then
+        RemoveHold()
+        return
+    end
     local char = LocalPlayer.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
     if not hrp then return end
@@ -461,13 +635,8 @@ local function EnsureHold()
         flightBV.Velocity = Vector3.zero
         flightBV.Parent = hrp
     end
-end
-
-local function RemoveHold()
-    if flightBV then
-        flightBV:Destroy()
-        flightBV = nil
-    end
+    hrp.AssemblyLinearVelocity = Vector3.zero
+    hrp.AssemblyAngularVelocity = Vector3.zero
 end
 
 local function CancelFlight()
@@ -537,9 +706,9 @@ local function SafeFlyTo(targetPos, resolver, cruiseAtTarget, quick)
 
     CancelFlight()
     local id = flightId
-    RemoveHold()
+    if flightBV then flightBV:Destroy() flightBV = nil end
 
-    if targetPos.X > 50000 and hrp.Position.X < 50000 then
+    if not IsSea2() and targetPos.X > 50000 and hrp.Position.X < 50000 then
         Invoke("requestEntrance", Vector3.new(61163.85, 5.34, 1819.78))
         task.wait(1)
         char = LocalPlayer.Character
@@ -588,7 +757,7 @@ local noclipWasOn = false
 Connect(RunService.Stepped, function()
     local char = LocalPlayer.Character
     if not char then return end
-    local need = State.Farm or State.Chests or flying
+    local need = State.Farm or State.AutoRaid or State.Chests or flying
     if need then
         noclipWasOn = true
         for _, p in ipairs(char:GetDescendants()) do
@@ -596,10 +765,7 @@ Connect(RunService.Stepped, function()
         end
     elseif noclipWasOn then
         noclipWasOn = false
-        for _, n in ipairs({"Head", "UpperTorso", "LowerTorso", "Torso"}) do
-            local p = char:FindFirstChild(n)
-            if p and p:IsA("BasePart") then p.CanCollide = true end
-        end
+        RemoveHold()
     end
 end)
 
@@ -672,7 +838,7 @@ local function EnsureWeaponEquipped()
     end
 end
 
--- ==================== СТЯГИВАНИЕ МОБОВ (BRING) ====================
+-- ==================== СТЯГИВАНИЕ + НЕВИДИМЫЙ ХИТБОКС ====================
 local bringTarget, gatherCF = nil, nil
 local lastSimRadius = 0
 
@@ -692,14 +858,23 @@ local function SetBringTarget(target)
     end
 end
 
-local function BringTick()
-    if not State.Bring or not State.Farm or not bringTarget or not gatherCF then return end
-    local pHrp = bringTarget:FindFirstChild("HumanoidRootPart")
-    local pHum = bringTarget:FindFirstChildOfClass("Humanoid")
-    if not pHrp or not pHum or pHum.Health <= 0 then
-        ClearBring()
-        return
+local function ExpandMobHitbox(mob, mHrp, hum)
+    if State.Hitbox then
+        local sz = State.HitboxSize or 55
+        mHrp.Size = Vector3.new(sz, sz, sz)
+        mHrp.Transparency = 1 -- Полностью невидимый хитбокс
+        mHrp.Massless = true  -- Не вызывает тряску физики
+        mHrp.CanCollide = false
     end
+    if hum then
+        hum.WalkSpeed = 0
+        hum.JumpPower = 0
+        hum.AutoRotate = false
+    end
+end
+
+local function BringTick()
+    if not State.Farm and not State.AutoRaid and not State.Hitbox then return end
 
     if os.clock() - lastSimRadius > 1 then
         lastSimRadius = os.clock()
@@ -713,21 +888,33 @@ local function BringTick()
 
     local enemies = workspace:FindFirstChild("Enemies")
     if not enemies then return end
-    local base = BaseName(bringTarget.Name)
+
+    local char = LocalPlayer.Character
+    local myHrp = char and char:FindFirstChild("HumanoidRootPart")
+
+    local base = nil
+    if State.Bring and (State.Farm or State.AutoRaid) and bringTarget and gatherCF then
+        if not IsValidMob(bringTarget) then
+            ClearBring()
+        else
+            base = BaseName(bringTarget.Name)
+        end
+    end
 
     for _, mob in ipairs(enemies:GetChildren()) do
-        if BaseName(mob.Name) == base then
+        if IsValidMob(mob) then
             local hum = mob:FindFirstChildOfClass("Humanoid")
             local mHrp = mob:FindFirstChild("HumanoidRootPart")
-            if hum and mHrp and hum.Health > 0 and (mHrp.Position - gatherCF.Position).Magnitude < 250 then
+            if myHrp and (mHrp.Position - myHrp.Position).Magnitude < 120 then
+                ExpandMobHitbox(mob, mHrp, hum)
+            end
+            if base and gatherCF and (State.AutoRaid or BaseName(mob.Name) == base) and (mHrp.Position - gatherCF.Position).Magnitude < 280 then
                 for _, part in ipairs(mob:GetChildren()) do
                     if part:IsA("BasePart") then
                         part.CanCollide = false
                     end
                 end
-                hum.WalkSpeed = 0
-                hum.AutoRotate = false
-                hum.PlatformStand = true
+                ExpandMobHitbox(mob, mHrp, hum)
                 mHrp.AssemblyLinearVelocity = Vector3.zero
                 mHrp.AssemblyAngularVelocity = Vector3.zero
                 mHrp.CFrame = gatherCF
@@ -745,18 +932,7 @@ local function InputAllowed()
     return true
 end
 
-local function AimMouseAt(worldPos)
-    local vp = Camera.ViewportSize
-    local pt = Vector2.new(vp.X * 0.5, vp.Y * 0.5)
-    local v, on = Camera:WorldToViewportPoint(worldPos)
-    if on and v.Z > 0 then
-        pt = Vector2.new(v.X, v.Y)
-    end
-    pcall(function() VIM:SendMouseMoveEvent(pt.X, pt.Y, game) end)
-    return pt
-end
-
--- ==================== ГИБРИДНЫЙ FAST ATTACK (ЛЁД / СВЕТ / ЧОП / МЕЧИ / СТИЛИ) ====================
+-- ==================== FAST ATTACK (БЕЗ ТРЯСКИ) ====================
 local fruitCombo = 0
 local lastFruitAtk = 0
 
@@ -769,38 +945,40 @@ local function FastClickAura(radius, targetPos)
     local enemies = workspace:FindFirstChild("Enemies")
     if not enemies then return end
 
-    local hitList = {}
+    local hitList1 = {}
+    local hitList2 = {}
     local primaryPart = nil
 
     for _, mob in ipairs(enemies:GetChildren()) do
-        local hum = mob:FindFirstChildOfClass("Humanoid")
-        local mHrp = mob:FindFirstChild("HumanoidRootPart")
-        if hum and mHrp and hum.Health > 0 then
-            if (mHrp.Position - hrp.Position).Magnitude <= (radius or 55) then
-                local head = mob:FindFirstChild("Head") or mHrp
+        if IsValidMob(mob) then
+            local hum = mob:FindFirstChildOfClass("Humanoid")
+            local mHrp = mob:FindFirstChild("HumanoidRootPart")
+            if (mHrp.Position - hrp.Position).Magnitude <= (radius or 75) then
+                ExpandMobHitbox(mob, mHrp, hum)
                 if not primaryPart then
-                    primaryPart = head
+                    primaryPart = mHrp
                 end
-                table.insert(hitList, {head, mob})
+                table.insert(hitList1, {mob, mHrp})
+                table.insert(hitList2, {mHrp, mob})
             end
         end
     end
 
-    if primaryPart and #hitList > 0 then
-        -- 1. Активация инструмента в руке
+    if primaryPart then
+        targetPos = targetPos or primaryPart.Position
+
+        -- 1. Физическая активация оружия в руках
         pcall(function() tool:Activate() end)
 
-        -- 2. Клиентский клик в центр видового экрана (запускает M1 любого оружия)
-        local vp = Camera.ViewportSize
+        -- 2. Фоновый клик VirtualUser
         pcall(function()
             VirtualUser:CaptureController()
-            VirtualUser:Button1Down(Vector2.new(vp.X * 0.5, vp.Y * 0.5))
-            VirtualUser:Button1Up(Vector2.new(vp.X * 0.5, vp.Y * 0.5))
+            VirtualUser:ClickButton1(Vector2.new(0, 0))
         end)
 
-        -- 3. Вызов внутренних ремоутов фруктов
+        -- 3. Активация ремоутов фруктов
         if tool.ToolTip == "Blox Fruit" and targetPos then
-            if os.clock() - lastFruitAtk >= (State.AtkInterval or 0.10) then
+            if os.clock() - lastFruitAtk >= (State.AtkInterval or 0.08) then
                 lastFruitAtk = os.clock()
                 local d = targetPos - hrp.Position
                 local maxC = (State.ComboMode == "1-4") and 4 or ((State.ComboMode == "1") and 1 or 3)
@@ -815,22 +993,17 @@ local function FastClickAura(radius, targetPos)
             end
         end
 
-        -- 4. Сетевой пакет нанесения урона
-        local attackerPart = tool:FindFirstChild("Handle")
-            or char:FindFirstChild("RightHand")
-            or char:FindFirstChild("Right Arm")
-            or hrp
-
-        if RegisterAttack then pcall(function() RegisterAttack:FireServer() end) end
-        if RegisterHit then pcall(function() RegisterHit:FireServer(attackerPart, hitList) end) end
+        -- 4. Прямые сетевые пакеты RegisterHit
+        if RegisterAttack then pcall(function() RegisterAttack:FireServer(0) end) end
+        if RegisterHit then
+            pcall(function() RegisterHit:FireServer(primaryPart, hitList1) end)
+            pcall(function() RegisterHit:FireServer(primaryPart, hitList2) end)
+        end
     end
 end
 
 local function PerformAttack(targetPos)
-    if targetPos then
-        Camera.CFrame = CFrame.lookAt(Camera.CFrame.Position, targetPos)
-    end
-    FastClickAura(55, targetPos)
+    FastClickAura(75, targetPos)
 end
 
 -- ==================== ИНТЕРФЕЙС ====================
@@ -846,6 +1019,8 @@ local COL = {
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "XenoModernHub"
 ScreenGui.ResetOnSpawn = false
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+ScreenGui.DisplayOrder = 999999
 ScreenGui.Parent = TargetParent
 
 local function Round(obj, r)
@@ -878,32 +1053,53 @@ end
 local OpenBtn = Instance.new("TextButton")
 OpenBtn.Name = "OpenBtn"
 OpenBtn.Parent = ScreenGui
-OpenBtn.Size = UDim2.new(0, 38, 0, 38)
+OpenBtn.Size = UDim2.new(0, 44, 0, 44)
 OpenBtn.Position = UDim2.new(0, 15, 0, 140)
 OpenBtn.BackgroundColor3 = Color3.fromRGB(15, 16, 22)
 OpenBtn.Text = "⚡"
 OpenBtn.TextColor3 = Color3.fromRGB(56, 136, 255)
-OpenBtn.TextSize = 18
+OpenBtn.TextSize = 20
 OpenBtn.Font = Enum.Font.GothamBold
 OpenBtn.Visible = false
 OpenBtn.Active = true
-OpenBtn.Draggable = true
 Round(OpenBtn, 10)
-Stroke(OpenBtn, Color3.fromRGB(45, 50, 68), 1.2)
+Stroke(OpenBtn, Color3.fromRGB(45, 50, 68), 1.5)
 
 local Main = Instance.new("Frame")
 Main.Name = "Main"
 Main.Parent = ScreenGui
-Main.Size = UDim2.new(0, 560, 0, 330)
-Main.Position = UDim2.new(0.5, -280, 0.5, -165)
+Main.Size = UDim2.new(0, 560, 0, 340)
+Main.Position = UDim2.new(0.5, -280, 0.5, -170)
 Main.BackgroundColor3 = Color3.fromRGB(15, 16, 21)
 Main.BorderSizePixel = 0
 Round(Main, 10)
 Stroke(Main, Color3.fromRGB(32, 35, 46), 1)
 
-OpenBtn.MouseButton1Click:Connect(function()
+local function ShowMainGui()
     OpenBtn.Visible = false
     Main.Visible = true
+end
+
+local function HideMainGui()
+    Main.Visible = false
+    OpenBtn.Visible = true
+end
+
+OpenBtn.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        ShowMainGui()
+    end
+end)
+OpenBtn.MouseButton1Click:Connect(ShowMainGui)
+
+Connect(UserInputService.InputBegan, function(input, gpe)
+    if not gpe and (input.KeyCode == Enum.KeyCode.RightControl or input.KeyCode == Enum.KeyCode.Insert) then
+        if Main.Visible then
+            HideMainGui()
+        else
+            ShowMainGui()
+        end
+    end
 end)
 
 local Sidebar = Instance.new("Frame")
@@ -917,11 +1113,11 @@ Round(Sidebar, 10)
 local SideList = Instance.new("UIListLayout")
 SideList.Parent = Sidebar
 SideList.SortOrder = Enum.SortOrder.LayoutOrder
-SideList.Padding = UDim.new(0, 4)
+SideList.Padding = UDim.new(0, 3)
 
 local SidePad = Instance.new("UIPadding")
 SidePad.Parent = Sidebar
-SidePad.PaddingTop = UDim.new(0, 12)
+SidePad.PaddingTop = UDim.new(0, 10)
 SidePad.PaddingLeft = UDim.new(0, 8)
 SidePad.PaddingRight = UDim.new(0, 8)
 
@@ -932,15 +1128,15 @@ TopHeader.Position = UDim2.new(0, 155, 0, 0)
 TopHeader.Size = UDim2.new(1, -155, 0, 50)
 TopHeader.BackgroundTransparency = 1
 
-local HeaderTitle = Label(TopHeader, "Main Farm", UDim2.new(0, 14, 0, 8), UDim2.new(0, 180, 0, 20),
+local HeaderTitle = Label(TopHeader, "Main Farm", UDim2.new(0, 14, 0, 8), UDim2.new(0, 220, 0, 20),
     Enum.Font.GothamBold, Color3.fromRGB(245, 246, 250), 16)
-local StatusLabel = Label(TopHeader, "v22.17 | idle", UDim2.new(0, 14, 0, 28), UDim2.new(0, 280, 0, 14),
+local StatusLabel = Label(TopHeader, "v23.3 | RightCtrl - меню | idle", UDim2.new(0, 14, 0, 28), UDim2.new(0, 320, 0, 14),
     Enum.Font.Gotham, COL.sub, 11)
 local lastStatus = ""
 local function SetStatus(s)
     if s ~= lastStatus then
         lastStatus = s
-        StatusLabel.Text = "v22.17 | " .. s
+        StatusLabel.Text = "v23.3 (Sea " .. (IsSea2() and "2" or "1") .. ") | " .. s
         local st = Diag.status
         st[#st + 1] = string.format("[%s] %s", os.date("%H:%M:%S"), s)
         if #st > 60 then table.remove(st, 1) end
@@ -959,10 +1155,7 @@ MinimizeBtn.TextColor3 = Color3.fromRGB(180, 186, 205)
 MinimizeBtn.TextSize = 13
 Round(MinimizeBtn, 6)
 Stroke(MinimizeBtn, Color3.fromRGB(38, 43, 58), 1)
-MinimizeBtn.MouseButton1Click:Connect(function()
-    Main.Visible = false
-    OpenBtn.Visible = true
-end)
+MinimizeBtn.MouseButton1Click:Connect(HideMainGui)
 
 local dragging, dragStart, startPos = false, nil, nil
 local function IsPointer(t)
@@ -1029,7 +1222,7 @@ local function CreateTab(name, icon)
     local TabBtn = Instance.new("TextButton")
     TabBtn.Name = name .. "Btn"
     TabBtn.Parent = Sidebar
-    TabBtn.Size = UDim2.new(1, 0, 0, 34)
+    TabBtn.Size = UDim2.new(1, 0, 0, 32)
     TabBtn.BackgroundTransparency = 1
     TabBtn.AutoButtonColor = false
     TabBtn.Text = ""
@@ -1174,6 +1367,7 @@ end
 
 -- ==================== ВКЛАДКИ ====================
 local FarmPage = CreateTab("Main Farm", "🌾")
+local RaidPage = CreateTab("Raids", "⚡")
 local CombatPage = CreateTab("Combat", "⚔️")
 local FruitPage = CreateTab("Fruits", "🍓")
 local TeleportPage = CreateTab("Teleports", "📍")
@@ -1185,7 +1379,15 @@ SelectTab("Main Farm")
 -- ==================== ОСНОВНОЙ АВТОФАРМ ====================
 local spawnSetFor = nil
 local activeQ = nil
-local FarmToggle, ChestToggle
+local FarmToggle, ChestToggle, RaidToggle
+
+AddSection(FarmPage, "World Selection")
+AddCycle(FarmPage, "Режим моря (Sea)", "Auto определяет море по карте и уровню", {"Auto", "Sea 2", "Sea 1"}, "SeaMode", function(v)
+    State.SeaMode = v
+    activeQ = nil
+    takenKey = nil
+    SetStatus("Режим моря: " .. v)
+end)
 
 local pvpIgnoreUntil = 0
 local friendCache = {}
@@ -1215,9 +1417,9 @@ local deaths = 0
 local respawnedAt = 0
 Connect(LocalPlayer.CharacterAdded, function()
     respawnedAt = os.clock()
-    if State.Farm then
+    if State.Farm or State.AutoRaid then
         deaths = deaths + 1
-        Notify("Респавн #" .. deaths .. ", возвращаюсь к фарму")
+        Notify("Респавн #" .. deaths .. ", продолжаю работу")
     end
 end)
 
@@ -1239,26 +1441,29 @@ local function TryStartQuest(qd)
     return now ~= nil and (a == 0 or now ~= before)
 end
 
+-- Плавный подлёт БЕЗ наклона персонажа вниз (убирает тряску экрана!)
 local lastStepT = os.clock()
-local function StepToward(hrp, goal, lookAt, maxSpeed)
+local function StepToward(hrp, goal, maxSpeed)
     local now = os.clock()
     local dt = math.clamp(now - lastStepT, 0.016, 0.2)
     lastStepT = now
     local delta = goal - hrp.Position
     local d = delta.Magnitude
-    local maxStep = maxSpeed * dt
-    local pos = (d <= maxStep) and goal or (hrp.Position + delta.Unit * maxStep)
-    if (pos - lookAt).Magnitude < 0.5 then
-        hrp.CFrame = CFrame.new(pos)
+    if d <= 1.2 then
+        hrp.CFrame = CFrame.new(goal)
     else
-        hrp.CFrame = CFrame.lookAt(pos, lookAt)
+        local maxStep = (maxSpeed or 180) * dt
+        local pos = (d <= maxStep) and goal or (hrp.Position + delta.Unit * maxStep)
+        hrp.CFrame = CFrame.new(pos)
     end
+    hrp.AssemblyLinearVelocity = Vector3.zero
+    hrp.AssemblyAngularVelocity = Vector3.zero
 end
 
 local function RiseBy(hrp, dy)
     CancelFlight()
     local id = flightId
-    RemoveHold()
+    if flightBV then flightBV:Destroy() flightBV = nil end
     LinearFly(hrp, hrp.Position + Vector3.new(0, dy, 0), 150, id)
     flying = false
     EnsureHold()
@@ -1422,7 +1627,7 @@ local function FarmStep(run)
         return
     end
 
-    -- ШАГ 2: Ближайший живой моб
+    -- ШАГ 2: Ближайший валидный живой моб
     local target = GetLiveMob(q.Mob, hrp.Position)
     local tHrp = target and target:FindFirstChild("HumanoidRootPart")
     if tHrp then
@@ -1431,7 +1636,6 @@ local function FarmStep(run)
         lastMobSeen[q.Mob] = mobPos
         Diag.camTarget = mobPos
 
-        -- Безопасная высота 14.5 studs над центром пачки на земле
         local stackPos = gatherCF and gatherCF.Position or mobPos
         local hoverPos = stackPos + Vector3.new(0, State.Hover, 0)
 
@@ -1439,7 +1643,7 @@ local function FarmStep(run)
         if approach > 25 then
             SetStatus("лечу к мобу " .. q.Mob .. " [" .. tostring(lastProgress) .. "]")
             if approach <= 150 then
-                StepToward(hrp, hoverPos, mobPos, 220)
+                StepToward(hrp, hoverPos, 220)
                 EnsureHold()
             else
                 SafeFlyTo(hoverPos, nil, nil, true)
@@ -1453,11 +1657,17 @@ local function FarmStep(run)
                     hpTrack.hp = th.Health
                     hpTrack.t = os.clock()
                     progChangedAt = os.clock()
+                elseif os.clock() - hpTrack.t > 4.5 then
+                    -- Моб не получает урон 4.5 сек -> Фейк НПС! Кидаем в черный список
+                    badMobs[target] = os.clock() + 120
+                    ClearBring()
+                    SetStatus("пропуск фейк-моба " .. q.Mob)
+                    return
                 end
             end
 
-            SetStatus(string.format("Fast Click: %s [%s]", q.Mob, tostring(lastProgress)))
-            StepToward(hrp, hoverPos, stackPos + Vector3.new(0.01, -1, 0.01), 140)
+            SetStatus(string.format("Атака: %s [%s]", q.Mob, tostring(lastProgress)))
+            StepToward(hrp, hoverPos, 140)
             EnsureHold()
             EnsureWeaponEquipped()
             PerformAttack(stackPos)
@@ -1491,6 +1701,149 @@ local function StartFarm()
         end
         if run == farmRun then
             CancelFlight()
+            ClearBring()
+            RemoveHold()
+        end
+    end)
+end
+
+-- ==================== АВТО-РЕЙДЫ (AUTO RAIDS) ====================
+local function IsRaidTimerActive()
+    local pGui = LocalPlayer:FindFirstChild("PlayerGui")
+    local main = pGui and pGui:FindFirstChild("Main")
+    local timer = main and (main:FindFirstChild("Timer") or main:FindFirstChild("RaidTimer"))
+    return timer and timer.Visible == true
+end
+
+local function GetNextRaidIsland()
+    local origin = workspace:FindFirstChild("_WorldOrigin")
+    local locs = origin and origin:FindFirstChild("Locations")
+    if not locs then return nil, nil end
+
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    local bestIsl, bestNum = nil, 0
+
+    for i = 5, 1, -1 do
+        local name = "Island " .. i
+        for _, loc in ipairs(locs:GetChildren()) do
+            if loc.Name == name and loc:IsA("BasePart") then
+                if not hrp or (loc.Position - hrp.Position).Magnitude < 4500 then
+                    if i > bestNum then
+                        bestIsl = loc
+                        bestNum = i
+                    end
+                end
+            end
+        end
+    end
+    return bestIsl, bestNum
+end
+
+local function BuyAndStartRaid()
+    Invoke("RaidsNpc", "Select", State.RaidChip)
+    task.wait(0.3)
+    pcall(function()
+        local island = workspace.Map:FindFirstChild("CircleIsland") or workspace.Map:FindFirstChild("RaidMap")
+        if island then
+            for _, d in ipairs(island:GetDescendants()) do
+                if d:IsA("ClickDetector") and d.Parent and d.Parent.Name == "Button" then
+                    if fireclickdetector then
+                        fireclickdetector(d)
+                    end
+                end
+            end
+        end
+    end)
+end
+
+local raidHpTrack = {mob = nil, hp = 0, t = 0}
+local function RaidStep(run)
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not hrp or not hum or hum.Health <= 0 then
+        SetStatus("рейд: жду респавн...")
+        task.wait(0.5)
+        return
+    end
+
+    EnsureBuso()
+
+    local isl, islNum = GetNextRaidIsland()
+    local inDungeon = IsRaidTimerActive() or (isl ~= nil)
+
+    if not inDungeon then
+        ClearBring()
+        if State.AutoChip then
+            SetStatus("рейд: покупаю чип " .. State.RaidChip .. " и запускаю...")
+            BuyAndStartRaid()
+            task.wait(2.5)
+        else
+            SetStatus("рейд: ожидание старта рейда (Island 1 не найден)")
+            task.wait(1)
+        end
+        return
+    end
+
+    -- Ищем любого живого моба в рейде
+    local mob = GetAnyRaidMob(hrp.Position)
+    local mHrp = mob and mob:FindFirstChild("HumanoidRootPart")
+    if mHrp then
+        SetBringTarget(mob)
+        local stackPos = gatherCF and gatherCF.Position or mHrp.Position
+        local hoverPos = stackPos + Vector3.new(0, State.Hover, 0)
+
+        local d = (hrp.Position - hoverPos).Magnitude
+        if d > 25 then
+            SetStatus(string.format("рейд (Oстров %s): лечу к %s", tostring(islNum or "?"), mob.Name))
+            if d <= 160 then
+                StepToward(hrp, hoverPos, 230)
+                EnsureHold()
+            else
+                SafeFlyTo(hoverPos, nil, nil, true)
+            end
+        else
+            local th = mob:FindFirstChildOfClass("Humanoid")
+            if raidHpTrack.mob ~= mob then
+                raidHpTrack = {mob = mob, hp = th and th.Health or 0, t = os.clock()}
+            elseif th then
+                if th.Health < raidHpTrack.hp - 0.5 then
+                    raidHpTrack.hp = th.Health
+                    raidHpTrack.t = os.clock()
+                elseif os.clock() - raidHpTrack.t > 5.0 then
+                    badMobs[mob] = os.clock() + 60
+                    ClearBring()
+                    return
+                end
+            end
+
+            SetStatus(string.format("рейд (Остров %s): бью %s", tostring(islNum or "?"), mob.Name))
+            StepToward(hrp, hoverPos, 150)
+            EnsureHold()
+            EnsureWeaponEquipped()
+            PerformAttack(stackPos)
+        end
+    elseif isl then
+        ClearBring()
+        local targetPos = isl.Position + Vector3.new(0, 25, 0)
+        SetStatus("рейд: лечу на Island " .. tostring(islNum))
+        SafeFlyTo(targetPos, ResolveGround, true, true)
+        task.wait(0.4)
+    end
+end
+
+local function StartAutoRaid()
+    raidRun = raidRun + 1
+    local run = raidRun
+    task.spawn(function()
+        while alive and State.AutoRaid and run == raidRun do
+            task.wait(0.04)
+            pcall(RaidStep, run)
+        end
+        if run == raidRun then
+            CancelFlight()
+            ClearBring()
             RemoveHold()
         end
     end)
@@ -1525,7 +1878,7 @@ SessLbl.TextYAlignment = Enum.TextYAlignment.Top
 task.spawn(function()
     while alive do
         task.wait(1)
-        if State.Farm then sess.active = sess.active + 1 end
+        if State.Farm or State.AutoRaid then sess.active = sess.active + 1 end
         local lvl, beli = ReadData("Level"), ReadData("Beli")
         local dl = (lvl and sess.lvl0) and (lvl - sess.lvl0) or 0
         local db = (beli and sess.beli0) and (beli - sess.beli0) or 0
@@ -1538,23 +1891,26 @@ task.spawn(function()
 end)
 
 AddSection(FarmPage, "Level Farming")
-FarmToggle = AddToggle(FarmPage, "Auto Farm Level", "Авто-квест + Fast Click по мобам", false, function(val)
+FarmToggle = AddToggle(FarmPage, "Auto Farm Level", "Авто-квест + Анти-Фейк НПС + Невидимый Хитбокс", false, function(val)
     State.Farm = val
     if val then
         if State.Chests and ChestToggle then ChestToggle:Set(false, true) end
-        -- Сворачиваем интерфейс в кнопку ⚡ для очистки экрана под M1-атаку
-        Main.Visible = false
-        OpenBtn.Visible = true
+        if State.AutoRaid and RaidToggle then RaidToggle:Set(false, true) end
         StartFarm()
     else
         farmRun = farmRun + 1
         CancelFlight()
+        ClearBring()
         RemoveHold()
     end
 end)
 
 AddToggle(FarmPage, "Bring Mobs (Стягивать пачкой)", "Стягивает всех мобов к цели", true, function(val)
     State.Bring = val
+end)
+
+AddToggle(FarmPage, "Hitbox Expander (Невидимый 55x55)", "Невидимый хитбокс мобов для 100% попадания сверху", true, function(val)
+    State.Hitbox = val
 end)
 
 AddToggle(FarmPage, "Anti-PvP (взлёт при игроке рядом)", "Уходит в небо, пока чужой игрок рядом", false, function(val)
@@ -1586,6 +1942,7 @@ ChestToggle = AddToggle(FarmPage, "Auto Chest Farm", "Авто-сбор сунд
     State.Chests = val
     if val then
         if State.Farm and FarmToggle then FarmToggle:Set(false, true) end
+        if State.AutoRaid and RaidToggle then RaidToggle:Set(false, true) end
         task.spawn(function()
             while alive and State.Chests do
                 local ok = pcall(function()
@@ -1603,33 +1960,71 @@ ChestToggle = AddToggle(FarmPage, "Auto Chest Farm", "Авто-сбор сунд
                 if not ok then task.wait(1) end
                 task.wait(0.1)
             end
-            if not State.Farm then
+            if not State.Farm and not State.AutoRaid then
                 CancelFlight()
                 RemoveHold()
             end
         end)
     else
         CancelFlight()
-        if not State.Farm then RemoveHold() end
+        if not State.Farm and not State.AutoRaid then RemoveHold() end
     end
+end)
+
+-- ==================== RAIDS PAGE ====================
+AddSection(RaidPage, "Auto Raid (Dungeon)")
+RaidToggle = AddToggle(RaidPage, "Auto Raid (Авто-прохождение)", "Авто-перелёт Island 1 -> 5 + зачистка всех волн и босса", false, function(val)
+    State.AutoRaid = val
+    if val then
+        if State.Farm and FarmToggle then FarmToggle:Set(false, true) end
+        if State.Chests and ChestToggle then ChestToggle:Set(false, true) end
+        StartAutoRaid()
+    else
+        raidRun = raidRun + 1
+        CancelFlight()
+        ClearBring()
+        RemoveHold()
+    end
+end)
+
+local RAID_CHIPS = {"Ice", "Flame", "Light", "Dark", "Magma", "Buddha", "Quake", "Spider", "Rumble", "Sand"}
+AddCycle(RaidPage, "Чип рейда (Fruit Chip)", "Выбери чип для покупки у Raid NPC", RAID_CHIPS, "RaidChip", function(v)
+    State.RaidChip = v
+end)
+
+AddToggle(RaidPage, "Auto Buy Chip & Start Raid", "Авто-покупка чипа и нажатие кнопки запуска в лаборатории", false, function(val)
+    State.AutoChip = val
+end)
+
+AddAction(RaidPage, "Купить чип сейчас", "Разовая покупка выбранного чипа через CommF_", function()
+    Invoke("RaidsNpc", "Select", State.RaidChip)
+    Notify("Запрос на покупку чипа: " .. State.RaidChip)
+end)
+
+AddAction(RaidPage, "Телепорт в Лабораторию Рейдов (Sea 2)", "Летит в комнату запуска рейдов на Hot and Cold", function()
+    if State.Farm and FarmToggle then FarmToggle:Set(false, true) end
+    SafeFlyTo(Vector3.new(-6438, 250, -4501))
+    CancelFlight()
+    RemoveHold()
 end)
 
 -- ==================== COMBAT ====================
 AddSection(CombatPage, "Combat")
 
-AddCycle(CombatPage, "Оружие", "Mixed = по очереди фрукт / стиль / меч (каждые 6с)", {"Any", "Blox Fruit", "Sword", "Melee", "Mixed"}, "Weapon", function(v)
+AddCycle(CombatPage, "Оружие", "Mixed = фрукт / стиль / меч каждые 6с", {"Any", "Blox Fruit", "Sword", "Melee", "Mixed"}, "Weapon", function(v)
     State.Weapon = v
     pcall(EnsureWeaponEquipped)
 end)
 
 local fastClickStandalone = false
-AddToggle(CombatPage, "Fast Click (AoE Aura)", "Мгновенно уничтожает всех мобов вокруг текущим оружием", false, function(val)
+AddToggle(CombatPage, "Fast Click + Hitbox Aura", "Расширяет невидимые хитбоксы вокруг и бьет всех мобов", false, function(val)
     fastClickStandalone = val
     if val then
         task.spawn(function()
             while alive and fastClickStandalone do
-                task.wait(0.08)
-                pcall(function() FastClickAura(55) end)
+                task.wait(0.06)
+                EnsureWeaponEquipped()
+                pcall(function() FastClickAura(75) end)
             end
         end)
     end
@@ -1640,22 +2035,18 @@ AddToggle(CombatPage, "Auto Buso Haki", "Держать Хаки включён�
 end)
 
 local SkillKeys = {Enum.KeyCode.Z, Enum.KeyCode.X, Enum.KeyCode.C, Enum.KeyCode.V}
-AddToggle(CombatPage, "Fruit Skills (Z X C V)", "Жмёт Z X C V текущего оружия во время фарма", false, function(val)
+AddToggle(CombatPage, "Fruit Skills (Z X C V)", "Жмёт Z X C V текущего оружия во время фарма/рейда", false, function(val)
     State.Skills = val
 end)
 task.spawn(function()
     local i = 0
     while alive do
         task.wait(0.4)
-        if State.Farm and State.Skills and bringTarget then
+        if (State.Farm or State.AutoRaid or fastClickStandalone) and State.Skills then
             pcall(function()
                 local char = LocalPlayer.Character
                 local tool = char and char:FindFirstChildOfClass("Tool")
                 if tool and IsWeaponTip(tool.ToolTip) and InputAllowed() then
-                    local th = bringTarget:FindFirstChild("HumanoidRootPart")
-                    local myH = char:FindFirstChild("HumanoidRootPart")
-                    if not th or not myH or (th.Position - myH.Position).Magnitude > 60 then return end
-                    AimMouseAt(th.Position)
                     i = i % #SkillKeys + 1
                     VIM:SendKeyEvent(true, SkillKeys[i], false, game)
                     task.wait(0.05)
@@ -1666,35 +2057,7 @@ task.spawn(function()
     end
 end)
 
-AddToggle(CombatPage, "Камера на мобе", "Наводит камеру на моба", true, function(val)
-    State.CamLock = val
-end)
-pcall(function() RunService:UnbindFromRenderStep("XenoFarmCam") end)
-RunService:BindToRenderStep("XenoFarmCam", Enum.RenderPriority.Camera.Value + 1, function()
-    if not alive then return end
-    local t = Diag.camTarget
-    local char = LocalPlayer.Character
-    local hrp = char and char:FindFirstChild("HumanoidRootPart")
-    if State.Farm and State.CamLock and t and hrp then
-        if Camera.CameraType ~= Enum.CameraType.Scriptable then
-            if not Diag.camOwned then
-                Diag.camZoom = math.clamp((Camera.CFrame.Position - Camera.Focus.Position).Magnitude, 6, 120)
-            end
-            Camera.CameraType = Enum.CameraType.Scriptable
-        end
-        Diag.camOwned = true
-        local zoom = Diag.camZoom or 14
-        local away = hrp.Position - t
-        local flat = Vector3.new(away.X, 0, away.Z)
-        if flat.Magnitude < 0.5 then flat = Vector3.new(0, 0, 1) end
-        Camera.CFrame = CFrame.lookAt(hrp.Position + flat.Unit * (zoom * 0.94) + Vector3.new(0, zoom * 0.34, 0), t)
-    elseif Diag.camOwned then
-        Diag.camOwned = false
-        Camera.CameraType = Enum.CameraType.Custom
-    end
-end)
-
-AddToggle(CombatPage, "Auto Stats", "Очки: половина в Защиту, половина в выбранный стат", false, function(val)
+AddToggle(CombatPage, "Auto Stats", "Очки: 50% в Защиту, 50% в выбранный стат", false, function(val)
     State.Stats = val
     if not val then return end
     task.spawn(function()
@@ -1717,7 +2080,7 @@ AddToggle(CombatPage, "Auto Stats", "Очки: половина в Защиту,
     end)
 end)
 
-AddCycle(CombatPage, "Стат для Auto Stats", "Вторая половина очков идёт сюда", {"Fruit", "Melee", "Sword"}, "StatMode", function(v)
+AddCycle(CombatPage, "Стат для Auto Stats", "Вторая половина очков", {"Fruit", "Melee", "Sword"}, "StatMode", function(v)
     State.StatMode = v
 end)
 
@@ -1782,7 +2145,7 @@ end)
 
 local fruitNotify = true
 local seenFruits = {}
-AddToggle(FruitPage, "Fruit Notifier", "Уведомление, когда на карте появляется фрукт", true, function(val)
+AddToggle(FruitPage, "Fruit Notifier", "Уведомление при появлении фрукта на карте", true, function(val)
     fruitNotify = val
 end)
 
@@ -1822,16 +2185,17 @@ AddAction(FruitPage, "Teleport to Fruit", "Лететь к ближайшему 
     if best then
         Notify("Летим к: " .. best.Name)
         SafeFlyTo(best.Handle.Position + Vector3.new(0, 3, 0))
-        if not State.Farm and not State.Chests then RemoveHold() end
+        if not State.Farm and not State.AutoRaid and not State.Chests then RemoveHold() end
     else
         Notify("Фруктов на земле нет!")
     end
 end)
 
--- ==================== TELEPORTS ====================
+-- ==================== TELEPORTS (SEA 2 + SEA 1) ====================
 local function TP(pos)
     return function()
         if State.Farm and FarmToggle then FarmToggle:Set(false, true) end
+        if State.AutoRaid and RaidToggle then RaidToggle:Set(false, true) end
         if State.Chests and ChestToggle then ChestToggle:Set(false, true) end
         local target = pos + Vector3.new(0, 14, 0)
         local ok = false
@@ -1847,7 +2211,20 @@ local function TP(pos)
     end
 end
 
-AddSection(TeleportPage, "All Islands (Sea 1)")
+AddSection(TeleportPage, "Sea 2 Islands")
+AddAction(TeleportPage, "The Cafe (Кафе)", "Главный хаб Sea 2", TP(Vector3.new(-380, 73, 299)))
+AddAction(TeleportPage, "Kingdom of Rose (Mansion)", "Особняк Дона Свана", TP(Vector3.new(-288, 306, 591)))
+AddAction(TeleportPage, "Kingdom of Rose (Start)", "Старт 700 ур.", TP(Vector3.new(-426, 73, 1836)))
+AddAction(TeleportPage, "Green Zone", "Зелёная зона (Lv. 875)", TP(Vector3.new(-2448, 73, -3210)))
+AddAction(TeleportPage, "Graveyard", "Кладбище (Lv. 950)", TP(Vector3.new(-5495, 48, -794)))
+AddAction(TeleportPage, "Snow Mountain", "Снежная гора (Lv. 1000)", TP(Vector3.new(607, 401, -5371)))
+AddAction(TeleportPage, "Hot and Cold (Raid Lab)", "Остров огня и льда (Lv. 1100)", TP(Vector3.new(-5430, 15, -5295)))
+AddAction(TeleportPage, "Cursed Ship", "Проклятый корабль (Lv. 1250)", TP(Vector3.new(923, 125, 32852)))
+AddAction(TeleportPage, "Ice Castle", "Ледяной замок (Lv. 1350)", TP(Vector3.new(5567, 28, -6244)))
+AddAction(TeleportPage, "Forgotten Island", "Забытый остров (Lv. 1425)", TP(Vector3.new(-3054, 237, -10142)))
+AddAction(TeleportPage, "Dark Arena", "Арена Тьмы (Черная Борода)", TP(Vector3.new(3780, 15, -3499)))
+
+AddSection(TeleportPage, "Sea 1 Islands")
 AddAction(TeleportPage, "Pirate Starter", "Стартовый остров пиратов (Lv. 1)", TP(Vector3.new(1013, 17, 1420)))
 AddAction(TeleportPage, "Marine Starter", "Стартовый остров дозорных (Lv. 1)", TP(Vector3.new(-2570, 7, 2045)))
 AddAction(TeleportPage, "Jungle", "Остров джунглей (Lv. 10)", TP(Vector3.new(-1612, 37, 149)))
@@ -1864,7 +2241,11 @@ AddAction(TeleportPage, "Underwater City", "Подводный город (Lv. 3
 AddAction(TeleportPage, "Fountain City", "Город фонтанов (Lv. 625)", TP(Vector3.new(5259, 39, 4050)))
 
 -- ==================== WORLD ====================
-AddSection(WorldPage, "Character Movement & Visuals")
+AddSection(WorldPage, "Performance & Visuals")
+
+AddToggle(WorldPage, "Remove Death/Hit VFX (Убрать эффекты)", "Убирает огромные эффекты после смерти НПС и вспышки ударов", true, function(val)
+    State.NoVFX = val
+end)
 
 local infJump = false
 AddToggle(WorldPage, "Infinite Jump", "Бесконечный прыжок в воздухе", false, function(val) infJump = val end)
@@ -1927,176 +2308,14 @@ AddToggle(WorldPage, "FullBright", "Убирает туман и темноту"
     end
 end)
 
--- ==================== ЭКСПОРТ И ОБЛЁТ (ADM PERMS) ====================
+-- ==================== ЭКСПОРТ (ADM PERMS) ====================
 local function SetupMapExport()
-    local SeenNpcs = {}
-    local SeenSpawns = {}
-    local collectOn = true
-
-    local function R1(n) return math.floor(n + 0.5) end
-    local function Fmt(v) return string.format("%d,%d,%d", R1(v.X), R1(v.Y), R1(v.Z)) end
-
-    local function CollectMapData()
-        local npcs = workspace:FindFirstChild("NPCs")
-        if npcs then
-            for _, m in ipairs(npcs:GetChildren()) do
-                local part = NpcPart(m)
-                if part then
-                    local pos = part.Position
-                    local key = m.Name .. ":" .. R1(pos.X / 5) .. ":" .. R1(pos.Y / 5) .. ":" .. R1(pos.Z / 5)
-                    if not SeenNpcs[key] then SeenNpcs[key] = {name = m.Name, pos = pos} end
-                end
-            end
-        end
-        local origin = workspace:FindFirstChild("_WorldOrigin")
-        local spawns = origin and origin:FindFirstChild("EnemySpawns")
-        if spawns then
-            for _, sp in ipairs(spawns:GetChildren()) do
-                if sp:IsA("BasePart") then
-                    local n = Norm(sp.Name)
-                    local rec = SeenSpawns[n]
-                    if not rec then
-                        rec = {raw = sp.Name, list = {}, keys = {}}
-                        SeenSpawns[n] = rec
-                    end
-                    local pos = sp.Position
-                    local key = R1(pos.X / 4) .. ":" .. R1(pos.Y / 4) .. ":" .. R1(pos.Z / 4)
-                    if not rec.keys[key] and #rec.list < 300 then
-                        rec.keys[key] = true
-                        table.insert(rec.list, pos)
-                    end
-                end
-            end
-        end
-    end
-
-    task.spawn(function()
-        while alive do
-            if collectOn then pcall(CollectMapData) end
-            task.wait(3)
-        end
-    end)
-
-    local function NearestSeenNpc(pos)
-        local best, bd = nil, math.huge
-        for _, r in pairs(SeenNpcs) do
-            local d = (r.pos - pos).Magnitude
-            if d < bd then best, bd = r, d end
-        end
-        return best, bd
-    end
-
-    local function Centroid(list)
-        local sum = Vector3.zero
-        for _, p in ipairs(list) do sum = sum + p end
-        return sum / #list
-    end
-
-    local function Clusters(list, radius)
-        local cl = {}
-        for _, p in ipairs(list) do
-            local placed = false
-            for _, c in ipairs(cl) do
-                if (c.sum / c.n - p).Magnitude < radius then
-                    c.sum = c.sum + p
-                    c.n = c.n + 1
-                    placed = true
-                    break
-                end
-            end
-            if not placed then cl[#cl + 1] = {sum = p, n = 1} end
-        end
-        return cl
-    end
-
-    local function BuildExport()
-        pcall(CollectMapData)
-        local L = {}
-        local function add(t) L[#L + 1] = t end
-
-        local team = "?"
-        pcall(function() team = LocalPlayer.Team and LocalPlayer.Team.Name or "none" end)
-        add("# XenoHub export | PlaceId=" .. game.PlaceId .. " | Level=" .. tostring(ReadData("Level")) .. " | Team=" .. team)
-        add("# Данные только по тому, что игра подгрузила рядом с тобой.")
-
-        add("")
-        add("## QUESTS (из таблицы скрипта -> что реально найдено)")
-        local all = {MarineStartQuest}
-        for _, qd in ipairs(QuestsData) do all[#all + 1] = qd end
-        for _, qd in ipairs(all) do
-            local parts = {string.format("Lv%d %s #%d mob=%s", qd.Level, qd.Quest, qd.Id, qd.Mob)}
-            parts[#parts + 1] = "tableNPC=" .. Fmt(qd.NpcPos)
-            parts[#parts + 1] = "tableMob=" .. Fmt(qd.MobPos)
-            if qd.NpcName then parts[#parts + 1] = "npcName=" .. qd.NpcName end
-            local learned = GetLearnedNpc(qd)
-            if learned then parts[#parts + 1] = "LEARNED_NPC=" .. Fmt(learned) end
-            local cen
-            local rec = SeenSpawns[Norm(qd.Mob)]
-            if rec and #rec.list > 0 then
-                cen = Centroid(rec.list)
-                local nd = math.huge
-                for _, p in ipairs(rec.list) do nd = math.min(nd, (p - qd.MobPos).Magnitude) end
-                parts[#parts + 1] = string.format("realSpawns=%d centroid=%s nearestToTableMob=%d", #rec.list, Fmt(cen), R1(nd))
-            else
-                parts[#parts + 1] = "realSpawns=none"
-            end
-            local n1, d1 = NearestSeenNpc(qd.NpcPos)
-            if n1 then
-                parts[#parts + 1] = string.format("seenNpcNearTable=%s@%s d=%d", n1.name, Fmt(n1.pos), R1(d1))
-            end
-            if cen then
-                local n2, d2 = NearestSeenNpc(cen)
-                if n2 then
-                    parts[#parts + 1] = string.format("seenNpcNearMobs=%s@%s d=%d", n2.name, Fmt(n2.pos), R1(d2))
-                end
-            end
-            add(table.concat(parts, " | "))
-        end
-
-        add("")
-        add("## NPCS (все, что видел сборщик): имя | x,y,z")
-        local npcList = {}
-        for _, r in pairs(SeenNpcs) do npcList[#npcList + 1] = r end
-        table.sort(npcList, function(a, b)
-            if a.name ~= b.name then return a.name < b.name end
-            return a.pos.X < b.pos.X
-        end)
-        for _, r in ipairs(npcList) do add(r.name .. " | " .. Fmt(r.pos)) end
-
-        add("")
-        add("## SPAWNS (имя спавна | точек всего | кластеры центр xN)")
-        local names = {}
-        for n in pairs(SeenSpawns) do names[#names + 1] = n end
-        table.sort(names)
-        for _, n in ipairs(names) do
-            local rec = SeenSpawns[n]
-            local cl = Clusters(rec.list, 150)
-            local cs = {}
-            for _, c in ipairs(cl) do cs[#cs + 1] = "(" .. Fmt(c.sum / c.n) .. ")x" .. c.n end
-            add(string.format("%s | %d | %s", rec.raw, #rec.list, table.concat(cs, " ")))
-        end
-        return L
-    end
-
-    local function DoExport()
-        local L = BuildExport()
-        local text = table.concat(L, "\n")
-        local fileOk, clipOk = false, false
-        if writefile then fileOk = pcall(writefile, "XenoHub_Export.txt", text) end
-        if setclipboard then clipOk = pcall(setclipboard, text) end
-        for _, line in ipairs(L) do print(line) end
-        local nNpc, nSp = 0, 0
-        for _ in pairs(SeenNpcs) do nNpc = nNpc + 1 end
-        for _ in pairs(SeenSpawns) do nSp = nSp + 1 end
-        Notify(string.format("Экспорт: NPC %d, спавнов %d", nNpc, nSp), 4)
-    end
-
     local function BuildReport()
         local L = {}
         local function add(t) L[#L + 1] = t end
         local function Cap(name, v) return name .. "=" .. tostring(v ~= nil) end
 
-        add("# XenoHub REPORT v22.17 | " .. os.date("%Y-%m-%d %H:%M:%S"))
+        add("# XenoHub REPORT v23.3 | Sea2=" .. tostring(IsSea2()) .. " | " .. os.date("%Y-%m-%d %H:%M:%S"))
         local team = "?"
         pcall(function() team = LocalPlayer.Team and LocalPlayer.Team.Name or "none" end)
         add("PlaceId=" .. game.PlaceId .. " | Level=" .. tostring(ReadData("Level")) .. " | Beli=" .. tostring(ReadData("Beli"))
@@ -2104,32 +2323,20 @@ local function SetupMapExport()
             .. " | Team=" .. team .. " | Players=" .. #Players:GetPlayers())
 
         add("")
-        add("## EXECUTOR")
+        add("## EXECUTOR & REMOTES")
         local exName, exVer = "?", "?"
         pcall(function() if identifyexecutor then exName, exVer = identifyexecutor() end end)
         add(tostring(exName) .. " " .. tostring(exVer))
-        add(table.concat({Cap("isnetworkowner", isnetworkowner), Cap("sethiddenproperty", sethiddenproperty),
-            Cap("RegisterAttack", RegisterAttack), Cap("RegisterHit", RegisterHit),
-            Cap("writefile", writefile), Cap("readfile", readfile), Cap("setclipboard", setclipboard)}, " | "))
+        add(table.concat({Cap("RegisterAttack", RegisterAttack), Cap("RegisterHit", RegisterHit),
+            Cap("isnetworkowner", isnetworkowner), Cap("sethiddenproperty", sethiddenproperty)}, " | "))
 
         add("")
         add("## QUEST STATE")
         local q = GetCurrentQuest()
-        add(string.format("current=%s #%s mob=%s npcName=%s npcPos=%s", q.Quest, tostring(q.Id), q.Mob, tostring(q.NpcName), Fmt(q.NpcPos)))
-        add("activeQ=" .. (activeQ and (activeQ.Quest .. ":" .. activeQ.Id) or "nil") .. " | takenKey=" .. tostring(takenKey))
+        add(string.format("current=%s #%s mob=%s npcName=%s", q.Quest, tostring(q.Id), q.Mob, tostring(q.NpcName)))
         local pa, pb = ReadProgress()
         add("progress=" .. (pa and (pa .. "/" .. pb) or "nil"))
 
-        add("")
-        add("## MOVEMENT / COMBAT")
-        local c = LocalPlayer.Character
-        local hrp = c and c:FindFirstChild("HumanoidRootPart")
-        local hum = c and c:FindFirstChildOfClass("Humanoid")
-        add("pos=" .. (hrp and Fmt(hrp.Position) or "-") .. " | hp=" .. (hum and (math.floor(hum.Health) .. "/" .. math.floor(hum.MaxHealth)) or "-"))
-
-        add("")
-        add("## EXPORT (NPC / спавны)")
-        for _, line in ipairs(BuildExport()) do add(line) end
         return L
     end
 
@@ -2146,85 +2353,8 @@ local function SetupMapExport()
         Notify("Отчёт скопирован в буфер обмена и консоль F9", 4)
     end
 
-    local scanRun = 0
-    local scanning = false
-    local SCAN_POINTS = {
-        Vector3.new(1013, 17, 1420), Vector3.new(-2570, 7, 2045), Vector3.new(-1612, 37, 149),
-        Vector3.new(-1141, 5, 3824), Vector3.new(894, 7, 4390), Vector3.new(1385, 87, -1298),
-        Vector3.new(-5036, 29, 4325), Vector3.new(-4842, 718, -2622), Vector3.new(-7894, 5547, -380),
-        Vector3.new(4854, 6, 743), Vector3.new(-1580, 8, -2980), Vector3.new(-5315, 12, 8515),
-        Vector3.new(61122, 19, 1568), Vector3.new(5259, 39, 4050),
-    }
-
-    local function SaveScanFile()
-        if not writefile then return end
-        pcall(function() writefile("XenoHub_Export.txt", table.concat(BuildExport(), "\n")) end)
-    end
-
-    local function VisitPoint(pos, run)
-        for _ = 1, 2 do
-            if not (alive and run == scanRun) then return false end
-            local char = LocalPlayer.Character
-            local hrp = char and char:FindFirstChild("HumanoidRootPart")
-            local hum = char and char:FindFirstChildOfClass("Humanoid")
-            if not hrp or not hum or hum.Health <= 0 then
-                task.wait(2)
-            else
-                if SafeFlyTo(pos + Vector3.new(0, 30, 0)) then
-                    task.wait(1.5)
-                    return true
-                end
-                task.wait(0.5)
-            end
-        end
-        return false
-    end
-
-    local function RunMapScan()
-        if scanning then Notify("Облёт уже идёт") return end
-        scanRun = scanRun + 1
-        local run = scanRun
-        scanning = true
-        if State.Farm and FarmToggle then FarmToggle:Set(false, true) end
-        if State.Chests and ChestToggle then ChestToggle:Set(false, true) end
-        Notify("Облёт карты запущен", 4)
-
-        task.spawn(function()
-            for i, p in ipairs(SCAN_POINTS) do
-                if not (alive and run == scanRun) then break end
-                SetStatus(string.format("скан: %d/%d", i, #SCAN_POINTS))
-                VisitPoint(p, run)
-                SaveScanFile()
-            end
-            if run == scanRun then
-                scanning = false
-                RemoveHold()
-                CancelFlight()
-                SetStatus("скан завершён")
-                DoExport()
-            end
-        end)
-    end
-
-    local function StopMapScan()
-        if not scanning then Notify("Облёт не запущен") return end
-        scanRun = scanRun + 1
-        scanning = false
-        CancelFlight()
-        RemoveHold()
-        SaveScanFile()
-        SetStatus("скан остановлен")
-        Notify("Облёт остановлен")
-    end
-
-    AddSection(AdminPage, "Отчёт для анализа")
-    AddAction(AdminPage, "Полный отчёт", "Все данные квестов, логи, NPC -> буфер + F9", DoReport)
-    AddSection(AdminPage, "Map Data Export")
-    AddToggle(AdminPage, "Сбор данных карты", "Запоминает NPC и спавны мобов", true, function(val) collectOn = val end)
-    AddAction(AdminPage, "Экспорт NPC и спавнов", "Записать данные в консоль и буфер", DoExport)
-    AddSection(AdminPage, "Авто-облёт карты")
-    AddAction(AdminPage, "Старт: облёт всех островов", "Летает по карте и собирает данные", RunMapScan)
-    AddAction(AdminPage, "Стоп облёта", "Остановить облёт", StopMapScan)
+    AddSection(AdminPage, "Диагностика")
+    AddAction(AdminPage, "Полный отчёт", "Лог квестов, ремоутов и позиции -> F9 и буфер", DoReport)
 end
 SetupMapExport()
 
@@ -2236,24 +2366,25 @@ end)
 
 AddAction(SettingsPage, "Close GUI", "Полностью выгрузить скрипт", function()
     alive = false
-    State.Farm, State.Chests, State.Stats = false, false, false
+    State.Farm, State.AutoRaid, State.Chests, State.Stats = false, false, false, false
     CfgSet("t:Auto Farm Level", false)
+    CfgSet("t:Auto Raid (Авто-прохождение)", false)
     CfgSet("t:Auto Chest Farm", false)
     CfgSet("t:Auto Stats", false)
     farmRun = farmRun + 1
+    raidRun = raidRun + 1
     infJump, fastSpeed, fruitESPActive = false, false, false
     if fullBright then fullBright = false; RestoreLighting() end
     ClearESP()
     CancelFlight()
+    ClearBring()
     RemoveHold()
-    pcall(function() RunService:UnbindFromRenderStep("XenoFarmCam") end)
-    if Diag.camOwned then Diag.camOwned = false Camera.CameraType = Enum.CameraType.Custom end
     for _, c in ipairs(Connections) do pcall(function() c:Disconnect() end) end
     Connections = {}
     ScreenGui:Destroy()
 end)
 
-AddAction(SettingsPage, "Reset Settings", "Сбросить настройки", function()
+AddAction(SettingsPage, "Reset Settings", "Сбросить конфиг", function()
     Config = {}
     SaveConfig()
     Notify("Настройки сброшены")
@@ -2267,4 +2398,4 @@ task.delay(2, function()
     PendingToggles = {}
 end)
 
-Notify("Xeno Hub v22.17 загружен! Запуск мгновенный.")
+Notify("Xeno Hub v23.3 загружен! (Меню: RightCtrl)")
