@@ -1,16 +1,7 @@
--- [[ XENO BLOX FRUITS HUB v22.14 - FAST CLICK EDITION (Sea 1) ]] --
--- v22.14: Fast Click (сетевая AoE-аура урона по мобам в радиусе), фикс чтения квестов "0/5",
---         снятие блокировки кликов при открытом хабе, сохранена вся база v22.13.
--- v22.13: быстрее удары (скорость/комбо фрукта, быстрый подлёт), камера держит твой зум, хаб сворачивается при старте фарма.
--- v22.12: конец квеста определяется сразу, камера на мобе, 4 способа атаки с самоподбором, Mixed (фрукт+стиль+меч), скиллы для любого оружия, кэш спавнов.
--- v22.11: Anti-PvP выключен по умолчанию.
--- v22.10: проверка квестов (не бросаем недобитый квест), кнопка "Полный отчёт для Claude", телепорт (3 попытки + отпускает на острове), клики не при открытом хабе.
--- v22.9: уровни Колизея (Toga 250), фолбэк на предыдущий квест, клики только при фокусе окна/закрытом меню/в центре экрана.
--- v22.8: фикс запуска: блок экспорта/облёта вынесен в отдельную функцию (лимит 200 локальных в Luau).
--- v22.6: прицел курсора на моба (фрукты больше не стреляют в небо), пропуск мобов без урона.
--- v22.5: все NPC квестов сверены со вторым экспортом (Sky Adventurer, Mole, Sky Quest Giver 2, Freezeburg Quest Giver, ...).
--- v22.4: точки квестов сверены с экспортом Adm Perms (NPC по имени, реальные спавны мобов, PlaceId 85211729168715).
--- v22.3: исправлена атака фруктами (Ice и др.) + авто-скиллы Z/X/C/V + кнопка Debug.
+-- [[ XENO BLOX FRUITS HUB v22.15 - MONOLITH COMMERCIAL EDITION (Sea 1) ]] --
+-- v22.15: Чистая сборка без дублей и синтаксических ошибок, высота 14.5 studs над стаком,
+--         универсальный Fast Attack для всех фруктов с M1 (Лёд, Свет, Чоп и др.), мечей и стилей боя,
+--         полный фикс стягивания мобов в одну точку на земле, клики не задевают GUI.
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -68,7 +59,7 @@ local Remotes = ReplicatedStorage:WaitForChild("Remotes", 5)
 local CommF = Remotes and Remotes:WaitForChild("CommF_", 5)
 if not CommF then Notify("CommF_ не найден: квесты/статы/хаки работать не будут") end
 
--- [v22.14] Сетевые модули урона (Fast Click / AoE Aura)
+-- Сетевые модули урона (Fast Click / AoE Aura)
 local NetModules = ReplicatedStorage:WaitForChild("Modules", 5) and ReplicatedStorage.Modules:WaitForChild("Net", 5)
 local RegisterAttack = NetModules and NetModules:FindFirstChild("RE/RegisterAttack")
 local RegisterHit = NetModules and NetModules:FindFirstChild("RE/RegisterHit")
@@ -120,14 +111,12 @@ local State = {
     Buso = true,
     AntiPvP = false,
     Skills = false,
-    Front = true,
     AtkInterval = 0.10,
     ComboMode = "1-3",
     CamLock = true,
     Weapon = Cfg("Weapon", "Any"),
     StatMode = Cfg("StatMode", "Fruit"),
-    FrontDist = Cfg("FrontDist", "Близко"),
-    Hover = 7.3,
+    Hover = 14.5,
 }
 local farmRun = 0
 
@@ -135,8 +124,6 @@ local Diag = {
     status = {}, errors = {}, hiddenSince = nil,
     spawnCache = {},
     camTarget = nil, camOwned = false,
-    varSwitchT = 0,
-    variant = {["Blox Fruit"] = 1, Melee = 1, Sword = 1, Gun = 1},
 }
 
 -- Анти-AFK
@@ -307,7 +294,6 @@ local lastQuestKey = nil
 local takenKey = nil
 local function QuestKey(qd) return qd.Quest .. ":" .. qd.Id end
 
--- [v22.14] Исправлено чтение: находит счетчик в любом тексте (например, "DEFEAT 5 BANDITS (0/5)")
 local lastProgress = nil
 local function ReadProgress()
     local panel = GetQuestPanel()
@@ -677,20 +663,10 @@ local function EnsureWeaponEquipped()
     end
 end
 
--- Стягивание мобов
+-- ==================== СТЯГИВАНИЕ МОБОВ (BRING) ====================
 local bringTarget, gatherCF = nil, nil
 local lastSimRadius = 0
 
-local function Owned(part)
-    if isnetworkowner then
-        local ok, r = pcall(isnetworkowner, part)
-        return ok and r == true
-    end
-    return true
-end
-
--- [Bring Fix] Мобы стягиваются строго в одну точку на земле, не задевая игрока
--- [Bring Fix] Мобы стягиваются строго в одну точку на земле, не задевая игрока
 local function ClearBring()
     bringTarget, gatherCF = nil, nil
 end
@@ -735,7 +711,6 @@ local function BringTick()
             local hum = mob:FindFirstChildOfClass("Humanoid")
             local mHrp = mob:FindFirstChild("HumanoidRootPart")
             if hum and mHrp and hum.Health > 0 and (mHrp.Position - gatherCF.Position).Magnitude < 250 then
-                -- Отключаем коллизию всех деталей моба, чтобы они не отталкивались друг от друга
                 for _, part in ipairs(mob:GetChildren()) do
                     if part:IsA("BasePart") then
                         part.CanCollide = false
@@ -755,14 +730,13 @@ Connect(RunService.Heartbeat, function()
     if alive then pcall(BringTick) end
 end)
 
--- [v22.14] Исправленный InputAllowed: блокирует клики ТОЛЬКО если фокус в чате
 local function InputAllowed()
     if UserInputService:GetFocusedTextBox() then return false end
     return true
 end
 
 local function AimMouseAt(worldPos)
-local vp = Camera.ViewportSize
+    local vp = Camera.ViewportSize
     local pt = Vector2.new(vp.X * 0.5, vp.Y * 0.5)
     local v, on = Camera:WorldToViewportPoint(worldPos)
     if on and v.Z > 0 then
@@ -771,15 +745,12 @@ local vp = Camera.ViewportSize
     pcall(function() VIM:SendMouseMoveEvent(pt.X, pt.Y, game) end)
     return pt
 end
--- ==================== УНИВЕРСАЛЬНЫЙ FAST ATTACK ====================
-local NetModules = ReplicatedStorage:WaitForChild("Modules", 5) and ReplicatedStorage.Modules:WaitForChild("Net", 5)
-local RegisterAttack = NetModules and NetModules:FindFirstChild("RE/RegisterAttack")
-local RegisterHit = NetModules and NetModules:FindFirstChild("RE/RegisterHit")
 
+-- ==================== УНИВЕРСАЛЬНЫЙ FAST ATTACK (ВСЕ ФРУКТЫ M1 / МЕЧИ / СТИЛИ) ====================
 local fruitCombo = 0
 local lastFruitAtk = 0
 
-local function FastClickAura(radius)
+local function FastClickAura(radius, targetPos)
     local char = LocalPlayer.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
     local tool = char and char:FindFirstChildOfClass("Tool")
@@ -790,7 +761,6 @@ local function FastClickAura(radius)
 
     local hitList = {}
     local primaryPart = nil
-    local targetPos = nil
 
     for _, mob in ipairs(enemies:GetChildren()) do
         local hum = mob:FindFirstChildOfClass("Humanoid")
@@ -799,26 +769,26 @@ local function FastClickAura(radius)
             if (mHrp.Position - hrp.Position).Magnitude <= (radius or 55) then
                 if not primaryPart then
                     primaryPart = mHrp
-                    targetPos = mHrp.Position
                 end
-                table.insert(hitList, {mob, mHrp})
+                table.insert(hitList, {mHrp, mHrp})
             end
         end
     end
 
-    if #hitList > 0 then
+    if primaryPart and #hitList > 0 then
         local tip = tool.ToolTip
 
-        -- 1. ДЛЯ МЕЧЕЙ, СТИЛЕЙ БОЯ И CHOP/BUDDHA: Сетевой урон пачкой
-        local attackerPart = tool:FindFirstChild("Handle")
-            or char:FindFirstChild("RightHand")
-            or char:FindFirstChild("Right Arm")
-            or hrp
+        -- 1. Нативная активация тула в руке
+        pcall(function() tool:Activate() end)
 
-        if RegisterAttack then pcall(function() RegisterAttack:FireServer(0) end) end
-        if RegisterHit then pcall(function() RegisterHit:FireServer(attackerPart, hitList) end) end
+        -- 2. Клиентский клик в верхний левый угол (1, 1) — активирует M1 любого фрукта (Лёд, Свет, Китсуне и т.д.)
+        pcall(function()
+            VirtualUser:CaptureController()
+            VirtualUser:Button1Down(Vector2.new(1, 1))
+            VirtualUser:Button1Up(Vector2.new(1, 1))
+        end)
 
-        -- 2. ДЛЯ ФРУКТОВ (Ice, Light, Magma и т.д.): Пакет атаки фрукта
+        -- 3. Если фрукт использует собственные ремоуты для атаки
         if tip == "Blox Fruit" and targetPos then
             if os.clock() - lastFruitAtk >= (State.AtkInterval or 0.10) then
                 lastFruitAtk = os.clock()
@@ -826,7 +796,7 @@ local function FastClickAura(radius)
                 local maxC = (State.ComboMode == "1-4") and 4 or ((State.ComboMode == "1") and 1 or 3)
                 fruitCombo = fruitCombo % maxC + 1
 
-                for _, rName in ipairs({"RemoteEvent", "LeftClickRemote", "Input"}) do
+                for _, rName in ipairs({"RemoteEvent", "LeftClickRemote", "Input", "Attack"}) do
                     local r = tool:FindFirstChild(rName)
                     if r and r:IsA("RemoteEvent") then
                         pcall(function() r:FireServer(d.Unit, fruitCombo) end)
@@ -835,8 +805,14 @@ local function FastClickAura(radius)
             end
         end
 
-        -- 3. Нативная активация тула в руках (без физических кликов по экрану)
-        pcall(function() tool:Activate() end)
+        -- 4. Сетевой пакет урона по пачке (для всех мечей, стилей боя, Чопа, Будды и M1)
+        local attackerPart = tool:FindFirstChild("Handle")
+            or char:FindFirstChild("RightHand")
+            or char:FindFirstChild("Right Arm")
+            or hrp
+
+        if RegisterAttack then pcall(function() RegisterAttack:FireServer(0) end) end
+        if RegisterHit then pcall(function() RegisterHit:FireServer(attackerPart, hitList) end) end
     end
 end
 
@@ -844,7 +820,7 @@ local function PerformAttack(targetPos)
     if targetPos then
         Camera.CFrame = CFrame.lookAt(Camera.CFrame.Position, targetPos)
     end
-    FastClickAura(55)
+    FastClickAura(55, targetPos)
 end
 
 -- ==================== ИНТЕРФЕЙС ====================
@@ -948,13 +924,13 @@ TopHeader.BackgroundTransparency = 1
 
 local HeaderTitle = Label(TopHeader, "Main Farm", UDim2.new(0, 14, 0, 8), UDim2.new(0, 180, 0, 20),
     Enum.Font.GothamBold, Color3.fromRGB(245, 246, 250), 16)
-local StatusLabel = Label(TopHeader, "v22.14 | idle", UDim2.new(0, 14, 0, 28), UDim2.new(0, 280, 0, 14),
+local StatusLabel = Label(TopHeader, "v22.15 | idle", UDim2.new(0, 14, 0, 28), UDim2.new(0, 280, 0, 14),
     Enum.Font.Gotham, COL.sub, 11)
 local lastStatus = ""
 local function SetStatus(s)
     if s ~= lastStatus then
         lastStatus = s
-        StatusLabel.Text = "v22.14 | " .. s
+        StatusLabel.Text = "v22.15 | " .. s
         local st = Diag.status
         st[#st + 1] = string.format("[%s] %s", os.date("%H:%M:%S"), s)
         if #st > 60 then table.remove(st, 1) end
@@ -1235,46 +1211,19 @@ Connect(LocalPlayer.CharacterAdded, function()
     end
 end)
 
-local hoverMin, hoverMax = 7.3, 20
-local hoverNow = hoverMin
+local hoverHeight = 14.5
 local retreatCooldown = 0
 local hpTrack = {mob = nil, hp = 0, t = 0}
-
-local frontLock = {mob = nil, dir = nil}
-local FRONT_DIST = {["Близко"] = {5, 3}, ["Средне"] = {8, 4}, ["Далеко"] = {12, 5}}
-local function FrontPosition(target, tHrp, fromPos)
-    local mobPos = tHrp.Position
-    if frontLock.mob ~= target then
-        local look = tHrp.CFrame.LookVector
-        local flat = Vector3.new(look.X, 0, look.Z)
-        if flat.Magnitude < 0.1 then
-            flat = Vector3.new(fromPos.X - mobPos.X, 0, fromPos.Z - mobPos.Z)
-        end
-        if flat.Magnitude < 0.1 then flat = Vector3.new(0, 0, 1) end
-        frontLock = {mob = target, dir = flat.Unit}
-    end
-    local char = LocalPlayer.Character
-    local tool = char and char:FindFirstChildOfClass("Tool")
-    local fd = FRONT_DIST[State.FrontDist or "Близко"] or FRONT_DIST["Близко"]
-    local dist = (tool and tool.ToolTip == "Blox Fruit") and fd[1] or fd[2]
-    local yOff = 2 + (hoverNow - hoverMin)
-    return mobPos + frontLock.dir * dist + Vector3.new(0, yOff, 0)
-end
 
 local function HookHealth(char)
     local hum = char:WaitForChild("Humanoid", 10)
     if not hum then return end
-    local last = hum.Health
     hum.HealthChanged:Connect(function(hp)
-        if alive and State.Farm and hp < last - 0.5 then
-            hoverNow = math.min(hoverMax, hoverNow + 2.5)
-        end
-        last = hp
+        -- Слушатель здоровья
     end)
 end
 if LocalPlayer.Character then task.spawn(HookHealth, LocalPlayer.Character) end
 Connect(LocalPlayer.CharacterAdded, function(c)
-    hoverNow = hoverMin
     task.spawn(HookHealth, c)
 end)
 
@@ -1485,9 +1434,9 @@ local function FarmStep(run)
         lastMobSeen[q.Mob] = mobPos
         Diag.camTarget = mobPos
 
--- Персонаж висит строго НАД пачкой мобов на безопасной высоте
+        -- Безопасная высота 14.5 studs над центром пачки на земле
         local stackPos = gatherCF and gatherCF.Position or mobPos
-        local hoverPos = stackPos + Vector3.new(0, hoverNow, 0)
+        local hoverPos = stackPos + Vector3.new(0, hoverHeight, 0)
 
         local approach = (hrp.Position - hoverPos).Magnitude
         if approach > 25 then
@@ -1507,15 +1456,12 @@ local function FarmStep(run)
                     hpTrack.hp = th.Health
                     hpTrack.t = os.clock()
                     progChangedAt = os.clock()
-                elseif os.clock() - hpTrack.t > 3.5 and hoverNow > hoverMin then
-                    hoverNow = math.max(hoverMin, hoverNow - 1.5)
-                    hpTrack.t = os.clock()
                 end
             end
 
             SetStatus(string.format("Fast Click: %s [%s]", q.Mob, tostring(lastProgress)))
             -- Направляем персонажа сверху строго в точку стака мобов
-            StepToward(hrp, hoverPos, stackPos + Vector3.new(0.01, 0, 0.01), 140)
+            StepToward(hrp, hoverPos, stackPos + Vector3.new(0.01, -1, 0.01), 140)
             EnsureHold()
             EnsureWeaponEquipped()
             PerformAttack(stackPos)
@@ -1525,7 +1471,7 @@ local function FarmStep(run)
         ClearBring()
         local sp, src = GetDynamicSpawn(q.Mob, q.MobPos, hrp.Position)
         SetStatus("ищу " .. q.Mob .. " (" .. src .. ")")
-        SafeFlyTo(sp + Vector3.new(0, 10, 0), src == "table" and ResolveGround or nil)
+        SafeFlyTo(sp + Vector3.new(0, hoverHeight, 0), src == "table" and ResolveGround or nil)
         task.wait(0.4)
     end
 end
@@ -1692,14 +1638,6 @@ end)
 
 AddToggle(CombatPage, "Auto Buso Haki", "Держать Хаки включённым", true, function(val)
     State.Buso = val
-end)
-
-AddToggle(CombatPage, "Бить перед мобом", "Встаёт перед мобом, а не над ним", true, function(val)
-    State.Front = val
-end)
-
-AddCycle(CombatPage, "Дистанция до моба", "Клик переключает: Близко / Средне / Далеко", {"Близко", "Средне", "Далеко"}, "FrontDist", function(v)
-    State.FrontDist = v
 end)
 
 local SkillKeys = {Enum.KeyCode.Z, Enum.KeyCode.X, Enum.KeyCode.C, Enum.KeyCode.V}
@@ -2160,7 +2098,7 @@ local function SetupMapExport()
         local function Cap(name, v) return name .. "=" .. tostring(v ~= nil) end
         local function Clean(t) return (string.gsub(tostring(t), "[\r\n]+", " ")) end
 
-        add("# XenoHub REPORT v22.14 | " .. os.date("%Y-%m-%d %H:%M:%S"))
+        add("# XenoHub REPORT v22.15 | " .. os.date("%Y-%m-%d %H:%M:%S"))
         local team = "?"
         pcall(function() team = LocalPlayer.Team and LocalPlayer.Team.Name or "none" end)
         add("PlaceId=" .. game.PlaceId .. " | Level=" .. tostring(ReadData("Level")) .. " | Beli=" .. tostring(ReadData("Beli"))
@@ -2331,4 +2269,4 @@ task.delay(2, function()
     PendingToggles = {}
 end)
 
-Notify("Xeno Hub v22.14 загружен! Fast Click активен.")
+Notify("Xeno Hub v22.15 загружен! Fast Click активен.")
